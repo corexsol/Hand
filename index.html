@@ -13,14 +13,11 @@
 
   <style>
     :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); --hold:1200ms; }
-
-    /* Kiosk hardening */
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     img,video{ -webkit-user-drag:none; user-drag:none; pointer-events:none; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
-    body{ touch-action:none; } /* block pan/pinch while palm is down */
+    body{ touch-action:none; }
 
-    /* Stage: two synced videos (bg blurred/zoomed, fg crisp) */
     .stage{ position:fixed; inset:0; background:var(--bg); }
     .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
     .stage .bg{
@@ -33,7 +30,7 @@
     }
     .stage .fg{
       object-fit:contain;
-      background:transparent; /* show blurred bg through letterboxing */
+      background:transparent;
       transform:scale(1) translate3d(0,0,0);
       will-change:transform,opacity;
       transition:transform var(--t) var(--e), opacity var(--t) var(--e);
@@ -43,16 +40,9 @@
       transform:scale(1.08) translate3d(0,0,0);
       transition:transform var(--hold) linear, opacity var(--t) var(--e);
     }
-    .go .stage .fg{
-      transform:scale(1.08) translate3d(0,0,0);
-      transition:none;
-    }
-    .returning .stage .fg{
-      transform:scale(1) translate3d(0,0,0);
-      transition:transform var(--t) var(--e), opacity var(--t) var(--e);
-    }
+    .go .stage .fg{ transform:scale(1.08) translate3d(0,0,0); transition:none; }
+    .returning .stage .fg{ transform:scale(1) translate3d(0,0,0); transition:transform var(--t) var(--e), opacity var(--t) var(--e); }
 
-    /* Long-press indicator (top) */
     .hold-indicator{
       position:fixed; left:50%; top:5vh; transform:translateX(-50%) translate3d(0,0,0);
       width:min(42vw,360px); height:6px; border-radius:999px;
@@ -70,7 +60,6 @@
     .holding .hold-indicator{ opacity:.5; }
     .holding .hold-indicator .bar{ transition:transform var(--hold) linear; transform:scaleX(1) translate3d(0,0,0); }
 
-    /* Success (glass over the same videos) */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:transparent; padding:2rem;
@@ -78,7 +67,6 @@
       transition:opacity var(--t) var(--e), transform var(--t) var(--e), visibility 0s linear var(--t);
       will-change:opacity,transform; z-index:3;
     }
-    /* Base glass layer */
     .success .glass{
       position:absolute; inset:0;
       background:rgba(3,4,24,.6);
@@ -89,46 +77,28 @@
       transition:opacity var(--t) var(--e);
       opacity:1; will-change:opacity;
     }
-    /* Extra blur layer that intensifies after text appears */
     .success .glass::after{
-      content:'';
-      position:absolute; inset:0;
-      background:rgba(3,4,24,.25);
-      backdrop-filter:blur(16px) saturate(140%);
-      -webkit-backdrop-filter:blur(16px) saturate(140%);
-      transform:translate3d(0,0,0);
-      opacity:0;
-      transition:opacity 1.2s ease-out;
-      will-change:opacity;
+      content:''; position:absolute; inset:0; background:rgba(3,4,24,.25);
+      backdrop-filter:blur(16px) saturate(140%); -webkit-backdrop-filter:blur(16px) saturate(140%);
+      transform:translate3d(0,0,0); opacity:0; transition:opacity 1.2s ease-out; will-change:opacity;
     }
     .success.intensify .glass::after{ opacity:1; }
 
     .success h1{
-      position:relative; z-index:1;
-      margin:0; letter-spacing:.02em; font-size:clamp(28px,5vw,80px);
+      position:relative; z-index:1; margin:0; letter-spacing:.02em; font-size:clamp(28px,5vw,80px);
       color:#eef3ff;
-      text-shadow:
-        0 0 6px rgba(120,150,255,.55),
-        0 0 14px rgba(120,150,255,.45),
-        0 0 34px rgba(120,150,255,.35),
-        0 0 60px rgba(120,150,255,.25);
+      text-shadow:0 0 6px rgba(120,150,255,.55),0 0 14px rgba(120,150,255,.45),0 0 34px rgba(120,150,255,.35),0 0 60px rgba(120,150,255,.25);
       opacity:0; transform:translateY(8px) scale(.985) translate3d(0,0,0);
       transition:opacity var(--t) var(--e), transform var(--t) var(--e);
       will-change:opacity,transform;
     }
 
-    /* Enter/exit states */
-    .go .success{
-      opacity:1; visibility:visible;
-      transform:scale(1) translate3d(0,0,0);
-      transition-delay:0s;
-    }
+    .go .success{ opacity:1; visibility:visible; transform:scale(1) translate3d(0,0,0); transition-delay:0s; }
     .go .success h1{ animation:rise .7s var(--e) forwards, neon 2.6s .25s ease-in-out infinite alternate; }
     .success.out{ opacity:0; transition:opacity var(--t) var(--e); }
     .success.out h1{ animation:fall .55s var(--e) forwards; }
     .success.out .glass::after{ opacity:0; transition:opacity .4s ease-out; }
 
-    /* Keyframes */
     @keyframes rise{ to{ opacity:1; transform:translateY(0) scale(1) translate3d(0,0,0); } }
     @keyframes fall{ to{ opacity:0; transform:translateY(8px) scale(.985) translate3d(0,0,0); } }
     @keyframes neon{
@@ -142,16 +112,13 @@
   </style>
 </head>
 <body>
-  <!-- Stage: background (blurred) + foreground (crisp) -->
   <div class="stage" id="stage">
     <video class="bg" id="bgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
     <video class="fg" id="fgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
   </div>
 
-  <!-- Long-press progress -->
   <div class="hold-indicator" aria-hidden="true"><div class="bar"></div></div>
 
-  <!-- Success (double-tap/double-click to return) -->
   <section class="success" id="success">
     <div class="glass" aria-hidden="true"></div>
     <h1 id="title">تم التدشين بحمد الله</h1>
@@ -165,12 +132,12 @@
     const success = document.getElementById('success');
     const title = document.getElementById('title');
 
-    // Nudge playback on first interaction (touch or mouse/stylus)
+    // Nudge playback on first interaction
     const nudgePlay = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
-    window.addEventListener('touchstart', nudgePlay, { once:true });
-    window.addEventListener('pointerdown', nudgePlay, { once:true });
+    addEventListener('touchstart', nudgePlay, { once:true });
+    addEventListener('pointerdown', nudgePlay, { once:true });
 
-    /* Keep both videos in sync (optimized) */
+    // Keep both videos in sync
     let syncFrame;
     function sync(){
       if (Math.abs(fg.currentTime - bg.currentTime) > 0.15) bg.currentTime = fg.currentTime;
@@ -181,22 +148,29 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    /* Long-press on main screen (multi-touch safe, primary touch only, scaled tolerance) */
+    // Long-press (primary touch only), with higher jitter tolerance
     const HOLD_MS = 1200;
-    const MOVE_TOL = Math.max(40, Math.floor(Math.min(innerWidth, innerHeight) * 0.045)); // ~4.5% of shorter side
+    const BASE_SIDE = Math.min(innerWidth, innerHeight);
+    let MOVE_TOL = Math.max(64, Math.floor(BASE_SIDE * 0.12)); // ~12% of short side, min 64px
 
     let holdTimer=null, startX=0, startY=0, holding=false, activeId=null, activeTarget=null;
 
     function startHold(e){
       if (document.body.classList.contains('go') || holding) return;
-      if (e.pointerType === 'touch' && !e.isPrimary) return; // primary touch only
+      if (e.pointerType === 'touch' && !e.isPrimary) return;
       holding = true;
       activeId = e.pointerId ?? 'mouse';
       activeTarget = e.target;
       startX = e.clientX; startY = e.clientY;
+
+      // Palm-aware bump: enlarge tolerance based on contact size (if provided)
+      const contact = Math.max(e.width || 0, e.height || 0);
+      if (contact) MOVE_TOL = Math.max(MOVE_TOL, Math.ceil(contact * 0.8));
+
       document.body.classList.remove('returning');
       document.body.classList.add('holding');
       activeTarget.setPointerCapture?.(activeId);
+
       clearTimeout(holdTimer);
       holdTimer = setTimeout(() => {
         if (!holding) return;
@@ -212,7 +186,7 @@
 
     function cancelHold(e){
       if (!holding) return;
-      if (e && activeId !== null && e.pointerId !== activeId) return; // ignore other fingers
+      if (e && activeId !== null && e.pointerId !== activeId) return;
       holding = false;
       clearTimeout(holdTimer);
       document.body.classList.remove('holding');
@@ -235,12 +209,12 @@
     addEventListener('pointerleave', onPointerLeave, { passive:true });
     addEventListener('pointermove', onPointerMove, { passive:true });
 
-    /* Back: double-tap/double-click on success */
+    // Double-tap/double-click to go back
     let lastTap=0;
     const beginBack = () => {
       if (!document.body.classList.contains('go')) return;
-      success.classList.remove('intensify'); // stop extra blur
-      success.classList.add('out');          // text OUT + fade overlay
+      success.classList.remove('intensify');
+      success.classList.add('out');
     };
     success.addEventListener('dblclick', beginBack);
     success.addEventListener('pointerup', () => {
@@ -249,14 +223,9 @@
       lastTap = now;
     }, { passive:true });
 
-    // After text rises, intensify blur behind it
     title.addEventListener('animationstart', (e) => {
-      if (e.animationName === 'rise') {
-        setTimeout(() => { success.classList.add('intensify'); }, 700);
-      }
+      if (e.animationName === 'rise') setTimeout(() => { success.classList.add('intensify'); }, 700);
     });
-
-    // After text OUT, return to initial state smoothly
     title.addEventListener('animationend', (e) => {
       if (e.animationName === 'fall' && success.classList.contains('out')) {
         success.classList.remove('out');
@@ -266,15 +235,13 @@
       }
     });
 
-    /* PWA: register Service Worker + request fullscreen on first interaction */
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch(console.error);
-    }
+    // SW + fullscreen (fullscreen doesn’t force rotation; orientation comes from manifest or OS)
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
     const goFS = () => {
       const el = document.documentElement;
       (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
     };
-    window.addEventListener('pointerdown', goFS, { once:true });
+    addEventListener('pointerdown', goFS, { once:true });
   </script>
 </body>
 </html>
