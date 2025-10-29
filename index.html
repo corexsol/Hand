@@ -7,7 +7,6 @@
   <meta name="theme-color" content="#030418" />
   <style>
     :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); }
-
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
     html,body,.stage,video,#hit{ touch-action:none; }
@@ -25,7 +24,7 @@
       transition:transform var(--t) var(--e), opacity var(--t) var(--e);
       z-index:1;
     }
-    .holding .stage .fg{ transform:scale(1.08); transition:transform 1200ms linear; }
+    .holding .stage .fg{ transform:scale(1.08); transition:transform 900ms linear; }
     .go .stage .fg{ transform:scale(1.08); transition:none; }
     .returning .stage .fg{ transform:scale(1); }
 
@@ -82,11 +81,14 @@
   </section>
 
   <script>
-  // Hardening + autoplay nudge
+  // Prevent default menus
   addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
+
   const fg = document.getElementById('fgVid'), bg = document.getElementById('bgVid');
   const hit = document.getElementById('hit'), bar = document.getElementById('bar');
   const success = document.getElementById('success'), title = document.getElementById('title');
+
+  // Autoplay nudge
   const nudge = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
   addEventListener('touchstart', nudge, { once:true, passive:false });
 
@@ -99,85 +101,58 @@
   fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs); rs = requestAnimationFrame(syncV); });
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
 
-  // ---- TOUCH-FIRST LONG PRESS (no PointerEvents) ----
-  const ARM_MS = 220;          // absorb noisy first contact
-  const HOLD_MS = 1000;        // total press needed
-  const GAP_GRACE_MS = 200;    // brief gap where progress is kept
-  const BACK_LOCK_MS = 4000;   // prevent immediate back
+  // ---- TOUCH-FIRST PALM LONG-PRESS ----
+  const ARM_MS = 350;        // settle window to absorb noisy landings
+  const HOLD_MS = 900;       // total time to trigger
+  const GAP_GRACE_MS = 280;  // keep progress alive during brief gaps
+  const BACK_LOCK_MS = 4000; // prevent instant back
 
-  let phase = 'idle';          // idle | arming | holding | success
-  let activeTouches = 0;
+  let phase = 'idle';        // idle | arming | holding | success
+  let active = 0;
   let armUntil = 0, gapUntil = 0, backUnlock = 0;
   let progress = 0, raf = 0, lastTS = 0;
 
   function now(){ return performance.now(); }
   function startRAF(){ if (!raf){ lastTS = now(); raf = requestAnimationFrame(tick); } }
   function stopRAF(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } }
+  function setHolding(on){ document.body.classList.toggle('holding', !!on); }
 
-  function setHolding(on){
-    if (on) document.body.classList.add('holding');
-    else document.body.classList.remove('holding');
-  }
-
-  function beginArming(){
-    phase = 'arming';
-    armUntil = now() + ARM_MS;
-    startRAF();
-  }
-  function beginHolding(){
-    phase = 'holding';
-    setHolding(true);
-    startRAF();
-  }
-  function resetAll(){
-    phase = 'idle'; progress = 0; bar.style.width = '0%';
-    setHolding(false); stopRAF();
-  }
+  function beginArming(){ phase = 'arming'; armUntil = now() + ARM_MS; startRAF(); }
+  function beginHolding(){ phase = 'holding'; setHolding(true); startRAF(); }
+  function resetAll(){ phase='idle'; progress=0; bar.style.width='0%'; setHolding(false); stopRAF(); }
   function fireSuccess(){
-    phase = 'success';
-    document.body.classList.add('go');
-    setHolding(false);
-    progress = 1; bar.style.width = '100%';
-    backUnlock = now() + BACK_LOCK_MS;
-    stopRAF();
+    phase='success'; document.body.classList.add('go'); setHolding(false);
+    progress=1; bar.style.width='100%'; backUnlock = now() + BACK_LOCK_MS; stopRAF();
   }
 
   function tick(ts){
     raf = 0;
     if (phase === 'arming'){
-      if (ts >= armUntil){
-        if (activeTouches > 0) beginHolding();
-        else resetAll();
-      }
+      if (ts >= armUntil){ active > 0 ? beginHolding() : resetAll(); }
     } else if (phase === 'holding'){
-      const dt = ts - lastTS;
-      progress += dt / HOLD_MS;
+      const dt = ts - lastTS; progress += dt / HOLD_MS;
       if (progress >= 1){ fireSuccess(); return; }
       bar.style.width = Math.floor(progress*100) + '%';
-      if (activeTouches === 0){
-        // scaling stops immediately, but keep progress alive until gap expires
-        if (ts >= gapUntil) { resetAll(); return; }
-      }
+      if (active === 0 && ts >= gapUntil) { resetAll(); return; }
     }
     lastTS = ts;
     if (phase === 'arming' || phase === 'holding') raf = requestAnimationFrame(tick);
   }
 
-  // Touch handlers
+  // Touch handlers (ignore pointer events entirely)
   hit.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    activeTouches = e.touches.length;
-    // if we were in a tiny cancel gap, resume immediately
-    if (phase === 'holding' && activeTouches > 0){ startRAF(); setHolding(true); return; }
-    if (phase === 'idle'){ beginArming(); }
+    active = e.touches.length;
+    if (phase === 'holding'){ setHolding(true); startRAF(); return; }
+    if (phase === 'idle') beginArming();
   }, {passive:false});
 
   function onTouchEnd(e){
     e.preventDefault();
-    activeTouches = e.touches.length;
-    if (phase === 'holding' && activeTouches === 0){
-      setHolding(false);                  // stop scale instantly
-      gapUntil = now() + GAP_GRACE_MS;   // but keep progress briefly
+    active = e.touches.length;
+    if (phase === 'holding' && active === 0){
+      setHolding(false);               // stop scale immediately
+      gapUntil = now() + GAP_GRACE_MS; // keep progress briefly
       startRAF();
     }
   }
