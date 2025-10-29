@@ -144,33 +144,53 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // Long-press with multi-touch resilience
+    // Long-press with multi-touch resilience and palm rejection
     const HOLD_MS = 1200;
     const BASE_SIDE = Math.min(innerWidth, innerHeight);
-    const BASE_TOL = Math.max(100, Math.floor(BASE_SIDE * 0.22)); // ~22% of short side, min 100px
+    const BASE_TOL = Math.max(100, Math.floor(BASE_SIDE * 0.22));
     let moveTol = BASE_TOL;
 
-    const down = new Map(); // pointerId -> {x,y}
+    const down = new Map(); // pointerId -> {x,y,contactSize}
     let holdTimer=null, startX=0, startY=0, holding=false, activeId=null, activeTarget=null;
     let moveCancelTimer=null;
 
+    // IMPROVED: More aggressive tolerance calculation based on contact size
     function updateTolFromContact(e){
       const contact = Math.max(e.width || 0, e.height || 0);
-      if (contact) moveTol = Math.max(moveTol, Math.ceil(contact * 1.3));
+      if (contact) {
+        // Much more aggressive scaling for large contacts (whole hand)
+        // Small contact (finger): ~1.5x base
+        // Large contact (palm): ~3-5x base
+        const scaleFactor = 1.5 + (contact / 50); // Increases with contact size
+        moveTol = Math.max(moveTol, Math.ceil(BASE_TOL * scaleFactor));
+      }
+    }
+
+    // IMPROVED: Ignore extremely large contacts (palm rejection)
+    function isPalmTouch(e){
+      const area = (e.width || 1) * (e.height || 1);
+      return area > 2500; // Ignore contacts > 50x50px (likely palm)
     }
 
     function startHold(e){
       if (document.body.classList.contains('go') || holding) return;
-      if (e.pointerType === 'touch' && !e.isPrimary) return; // start from primary only
+      if (e.pointerType === 'touch' && !e.isPrimary) return;
+      
+      // IMPROVED: Skip if it's a palm touch
+      if (isPalmTouch(e)) return;
 
       holding = true;
       activeId = e.pointerId ?? 'mouse';
       activeTarget = e.target;
       startX = e.clientX; startY = e.clientY;
+      
+      // FIXED: Reset tolerance at start of each hold
       moveTol = BASE_TOL;
       updateTolFromContact(e);
 
-      down.set(activeId, {x:startX, y:startY});
+      const contactSize = Math.max(e.width || 0, e.height || 0);
+      down.set(activeId, {x:startX, y:startY, contactSize});
+      
       document.body.classList.remove('returning');
       document.body.classList.add('holding');
       activeTarget.setPointerCapture?.(activeId);
@@ -182,7 +202,7 @@
     function fireSuccess(){
       if (!holding) return;
       document.body.classList.add('go');
-      backUnlock = performance.now() + BACK_LOCK_MS; // 4s lock
+      backUnlock = performance.now() + BACK_LOCK_MS;
       requestAnimationFrame(() => {
         document.body.classList.remove('holding');
         holding = false;
@@ -219,26 +239,37 @@
     }
 
     function onPointerDown(e){
-      // Always record, even if already holding
-      down.set(e.pointerId, {x:e.clientX, y:e.clientY});
-      updateTolFromContact(e);
+      // IMPROVED: Ignore palm touches completely
+      if (!isPalmTouch(e)) {
+        const contactSize = Math.max(e.width || 0, e.height || 0);
+        down.set(e.pointerId, {x:e.clientX, y:e.clientY, contactSize});
+        updateTolFromContact(e);
+      }
       if (!holding) startHold(e);
     }
+
     function onPointerUp(e){ handlePointerEnd(e.pointerId); }
-    function onPointerCancel(e){ handlePointerEnd(e.pointerId); } // don't cancel whole flow if others remain
+    function onPointerCancel(e){ handlePointerEnd(e.pointerId); }
 
     function onPointerMove(e){
-      // Track positions for all pointers
-      if (down.has(e.pointerId)) down.set(e.pointerId, {x:e.clientX, y:e.clientY});
+      // IMPROVED: Update position only for tracked (non-palm) contacts
+      if (down.has(e.pointerId) && !isPalmTouch(e)) {
+        const contactSize = Math.max(e.width || 0, e.height || 0);
+        down.set(e.pointerId, {x:e.clientX, y:e.clientY, contactSize});
+      }
+      
       if (!holding || e.pointerId !== activeId) return;
+      
+      // IMPROVED: Ignore movement if current contact is palm-sized
+      if (isPalmTouch(e)) return;
 
       const dx = Math.abs(e.clientX - startX);
       const dy = Math.abs(e.clientY - startY);
       const out = (dx > moveTol || dy > moveTol);
 
-      // Hysteresis: must stay out of bounds briefly before cancel
+      // IMPROVED: Longer delay before canceling (300ms instead of 160ms)
       if (out) {
-        if (!moveCancelTimer) moveCancelTimer = setTimeout(() => { cancelHoldCore(); }, 160);
+        if (!moveCancelTimer) moveCancelTimer = setTimeout(() => { cancelHoldCore(); }, 300);
       } else {
         if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer=null; }
       }
@@ -247,7 +278,6 @@
     addEventListener('pointerdown', onPointerDown, { passive:true });
     addEventListener('pointerup', onPointerUp, { passive:true });
     addEventListener('pointercancel', onPointerCancel, { passive:true });
-    // Intentionally no pointerleave
     addEventListener('pointermove', onPointerMove, { passive:true });
 
     // Back: double-tap/double-click with 4s lockout after success
