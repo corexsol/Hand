@@ -3,14 +3,17 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Hand Loop → Success</title>
+  <title>Hand Tap → Success</title>
   <meta name="theme-color" content="#030418" />
   <style>
     :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); }
+
+    /* Hardening */
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
     html,body,.stage,video,#hit{ touch-action:none; }
 
+    /* Stage: blurred cover bg + crisp contain fg */
     .stage{ position:fixed; inset:0; background:var(--bg); }
     .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
     .stage .bg{
@@ -21,24 +24,19 @@
     }
     .stage .fg{
       object-fit:contain; background:transparent; transform:scale(1);
-      transition:transform var(--t) var(--e), opacity var(--t) var(--e);
+      transition:transform 200ms var(--e), opacity var(--t) var(--e);
       z-index:1;
     }
-    .holding .stage .fg{ transform:scale(1.08); transition:transform 900ms linear; }
-    .go .stage .fg{ transform:scale(1.08); transition:none; }
+    /* pressed state while any finger is down */
+    .pressed .stage .fg{ transform:scale(1.04); }
+    /* success */
+    .go .stage .fg{ transform:scale(1.04); transition:none; }
     .returning .stage .fg{ transform:scale(1); }
 
+    /* Fullscreen hitbox */
     #hit{ position:fixed; inset:0; z-index:2; background:transparent; }
 
-    .hold-indicator{
-      position:fixed; left:50%; top:5vh; transform:translateX(-50%);
-      width:min(42vw,360px); height:6px; border-radius:999px;
-      background:rgba(255,255,255,.18); overflow:hidden; opacity:0; z-index:3; pointer-events:none;
-      transition:opacity 150ms var(--e); box-shadow:0 2px 16px rgba(0,0,0,.25) inset, 0 0 24px rgba(120,150,255,.15);
-    }
-    .hold-indicator .bar{ height:100%; width:0%; background:linear-gradient(90deg,#7aa2ff,#dfe7ff); box-shadow:0 0 18px rgba(120,150,255,.35); }
-    .holding .hold-indicator{ opacity:.5; }
-
+    /* Success overlay */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:rgba(3,4,24,.6);
@@ -74,26 +72,28 @@
 
   <div id="hit" aria-hidden="true"></div>
 
-  <div class="hold-indicator" aria-hidden="true"><div class="bar" id="bar"></div></div>
-
   <section class="success" id="success">
     <h1 id="title">تم التدشين بحمد الله</h1>
   </section>
 
   <script>
-  // Prevent default menus
+  // Prevent context menu
   addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
 
-  const fg = document.getElementById('fgVid'), bg = document.getElementById('bgVid');
-  const hit = document.getElementById('hit'), bar = document.getElementById('bar');
-  const success = document.getElementById('success'), title = document.getElementById('title');
+  const fg = document.getElementById('fgVid');
+  const bg = document.getElementById('bgVid');
+  const hit = document.getElementById('hit');
+  const success = document.getElementById('success');
+  const title = document.getElementById('title');
 
-  // Autoplay nudge
+  // Autoplay nudge (first user interaction)
   const nudge = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
   addEventListener('touchstart', nudge, { once:true, passive:false });
+  addEventListener('pointerdown', nudge, { once:true, passive:false });
 
-  // Minimal sync
-  let rs; function syncV(){
+  // Minimal video sync
+  let rs;
+  function syncV(){
     if (Math.abs(fg.currentTime - bg.currentTime) > 0.15) bg.currentTime = fg.currentTime;
     if (fg.paused && !bg.paused) fg.play().catch(()=>{});
     if (!fg.paused && bg.paused) bg.play().catch(()=>{});
@@ -101,84 +101,92 @@
   fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs); rs = requestAnimationFrame(syncV); });
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
 
-  // ---- TOUCH-FIRST PALM LONG-PRESS ----
-  const ARM_MS = 350;        // settle window to absorb noisy landings
-  const HOLD_MS = 900;       // total time to trigger
-  const GAP_GRACE_MS = 280;  // keep progress alive during brief gaps
-  const BACK_LOCK_MS = 4000; // prevent instant back
+  // Tap-to-trigger-on-release
+  const BACK_LOCK_MS = 4000; // prevent accidental back for 4s after success
+  let useTouch = false;
+  let touches = 0;
+  let backUnlock = 0;
 
-  let phase = 'idle';        // idle | arming | holding | success
-  let active = 0;
-  let armUntil = 0, gapUntil = 0, backUnlock = 0;
-  let progress = 0, raf = 0, lastTS = 0;
-
-  function now(){ return performance.now(); }
-  function startRAF(){ if (!raf){ lastTS = now(); raf = requestAnimationFrame(tick); } }
-  function stopRAF(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } }
-  function setHolding(on){ document.body.classList.toggle('holding', !!on); }
-
-  function beginArming(){ phase = 'arming'; armUntil = now() + ARM_MS; startRAF(); }
-  function beginHolding(){ phase = 'holding'; setHolding(true); startRAF(); }
-  function resetAll(){ phase='idle'; progress=0; bar.style.width='0%'; setHolding(false); stopRAF(); }
+  function pressOn(){
+    if (document.body.classList.contains('go')) return;
+    document.body.classList.add('pressed');
+  }
+  function pressOff(){
+    document.body.classList.remove('pressed');
+  }
   function fireSuccess(){
-    phase='success'; document.body.classList.add('go'); setHolding(false);
-    progress=1; bar.style.width='100%'; backUnlock = now() + BACK_LOCK_MS; stopRAF();
+    document.body.classList.add('go');
+    pressOff();
+    backUnlock = performance.now() + BACK_LOCK_MS;
   }
 
-  function tick(ts){
-    raf = 0;
-    if (phase === 'arming'){
-      if (ts >= armUntil){ active > 0 ? beginHolding() : resetAll(); }
-    } else if (phase === 'holding'){
-      const dt = ts - lastTS; progress += dt / HOLD_MS;
-      if (progress >= 1){ fireSuccess(); return; }
-      bar.style.width = Math.floor(progress*100) + '%';
-      if (active === 0 && ts >= gapUntil) { resetAll(); return; }
-    }
-    lastTS = ts;
-    if (phase === 'arming' || phase === 'holding') raf = requestAnimationFrame(tick);
-  }
-
-  // Touch handlers (ignore pointer events entirely)
+  // TOUCH path
   hit.addEventListener('touchstart', (e) => {
+    useTouch = true;
     e.preventDefault();
-    active = e.touches.length;
-    if (phase === 'holding'){ setHolding(true); startRAF(); return; }
-    if (phase === 'idle') beginArming();
+    touches = e.touches.length;
+    if (touches > 0) pressOn();
   }, {passive:false});
 
   function onTouchEnd(e){
     e.preventDefault();
-    active = e.touches.length;
-    if (phase === 'holding' && active === 0){
-      setHolding(false);               // stop scale immediately
-      gapUntil = now() + GAP_GRACE_MS; // keep progress briefly
-      startRAF();
+    touches = e.touches.length;
+    if (touches === 0){
+      // transition only when ALL touches are removed
+      if (!document.body.classList.contains('go')) fireSuccess();
+      else pressOff();
     }
   }
   hit.addEventListener('touchend', onTouchEnd, {passive:false});
   hit.addEventListener('touchcancel', onTouchEnd, {passive:false});
 
-  // Back from success after lock window
+  // POINTER fallback (for mouse/stylus)
+  const pset = new Set();
+  hit.addEventListener('pointerdown', (e) => {
+    if (useTouch) return; // ignore if touch path in use
+    e.preventDefault();
+    pset.add(e.pointerId);
+    try { hit.setPointerCapture(e.pointerId); } catch(_){}
+    pressOn();
+  }, {passive:false});
+
+  function onPointerUp(e){
+    if (useTouch) return;
+    pset.delete(e.pointerId);
+    if (pset.size === 0){
+      if (!document.body.classList.contains('go')) fireSuccess();
+      else pressOff();
+    }
+  }
+  hit.addEventListener('pointerup', onPointerUp, {passive:true});
+  hit.addEventListener('pointercancel', onPointerUp, {passive:true});
+
+  // Back from success via double-tap/click (after lock window)
   let lastTap = 0;
-  function beginBack(){ if (now() >= backUnlock) success.classList.add('out'); }
+  function beginBack(){
+    const t = performance.now();
+    if (t < backUnlock) return;
+    success.classList.add('out');
+  }
   success.addEventListener('dblclick', beginBack);
   success.addEventListener('touchend', () => {
-    const t = now(); if (t < backUnlock) return;
-    if (t - lastTap < 320) beginBack(); lastTap = t;
+    const t = performance.now();
+    if (t < backUnlock) return;
+    if (t - lastTap < 320) beginBack();
+    lastTap = t;
   }, {passive:true});
+
   title.addEventListener('animationend', (e) => {
     if (e.animationName === 'fall' && success.classList.contains('out')){
       success.classList.remove('out');
       document.body.classList.remove('go');
       document.body.classList.add('returning');
-      setTimeout(()=>document.body.classList.remove('returning'), 720);
-      resetAll();
+      setTimeout(() => document.body.classList.remove('returning'), 720);
     }
   });
 
-  // Fullscreen + portrait lock once
-  addEventListener('touchstart', async () => {
+  // Optional: request fullscreen + portrait lock once
+  addEventListener('pointerdown', async () => {
     const el = document.documentElement;
     (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
     try { await screen.orientation.lock('portrait'); } catch(_){}
