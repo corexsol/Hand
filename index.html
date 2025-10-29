@@ -8,12 +8,10 @@
   <style>
     :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); }
 
-    /* Lock gestures / simplify hit-testing */
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
     html,body,.stage,video,#hit{ touch-action:none; }
 
-    /* Video stage: blurred cover bg + crisp contain fg */
     .stage{ position:fixed; inset:0; background:var(--bg); }
     .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
     .stage .bg{
@@ -23,8 +21,7 @@
       z-index:0;
     }
     .stage .fg{
-      object-fit:contain; background:transparent;
-      transform:scale(1);
+      object-fit:contain; background:transparent; transform:scale(1);
       transition:transform var(--t) var(--e), opacity var(--t) var(--e);
       z-index:1;
     }
@@ -32,21 +29,17 @@
     .go .stage .fg{ transform:scale(1.08); transition:none; }
     .returning .stage .fg{ transform:scale(1); }
 
-    /* Full-screen hitbox to capture all pointers */
     #hit{ position:fixed; inset:0; z-index:2; background:transparent; }
 
-    /* Progress bar */
     .hold-indicator{
       position:fixed; left:50%; top:5vh; transform:translateX(-50%);
       width:min(42vw,360px); height:6px; border-radius:999px;
-      background:rgba(255,255,255,.18); overflow:hidden; opacity:0;
-      transition:opacity 150ms var(--e); pointer-events:none; z-index:3;
-      box-shadow:0 2px 16px rgba(0,0,0,.25) inset, 0 0 24px rgba(120,150,255,.15);
+      background:rgba(255,255,255,.18); overflow:hidden; opacity:0; z-index:3; pointer-events:none;
+      transition:opacity 150ms var(--e); box-shadow:0 2px 16px rgba(0,0,0,.25) inset, 0 0 24px rgba(120,150,255,.15);
     }
     .hold-indicator .bar{ height:100%; width:0%; background:linear-gradient(90deg,#7aa2ff,#dfe7ff); box-shadow:0 0 18px rgba(120,150,255,.35); }
     .holding .hold-indicator{ opacity:.5; }
 
-    /* Success overlay */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:rgba(3,4,24,.6);
@@ -75,25 +68,21 @@
   </style>
 </head>
 <body>
-  <!-- Videos -->
   <div class="stage">
     <video class="bg" id="bgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
     <video class="fg" id="fgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
   </div>
 
-  <!-- Hitbox -->
   <div id="hit" aria-hidden="true"></div>
 
-  <!-- Progress -->
   <div class="hold-indicator" aria-hidden="true"><div class="bar" id="bar"></div></div>
 
-  <!-- Success -->
   <section class="success" id="success">
     <h1 id="title">تم التدشين بحمد الله</h1>
   </section>
 
   <script>
-  // Hardening
+  // Basic hardening
   addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
 
   const fg = document.getElementById('fgVid');
@@ -118,42 +107,28 @@
   fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs); rs = requestAnimationFrame(syncV); });
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
 
-  // --- Robust hold: arming burst + instant visual stop + micro-up cancel guard ---
-  const HOLD_MS       = 1200; // time to trigger
-  const ARM_MS        = 180;  // collect initial fingers
-  const MICRO_UP_MS   = 100;  // tiny guard for cancel (progress only)
-  const BACK_LOCK_MS  = 4000; // lock back after success
+  // Hold logic — touch-first, pointer fallback
+  const HOLD_MS      = 1200;
+  const ARM_MS       = 200;   // absorb full-palm burst
+  const MICRO_UP_MS  = 80;    // tiny cancel guard for progress (visuals stop instantly)
+  const BACK_LOCK_MS = 4000;
 
-  let active = new Set();
+  let useTouch = false;       // prefer touch events on Android tablets
+  let activeCount = 0;        // current contact count
+  let pointers = new Set();   // fallback for pointer events
   let phase = 'idle';         // 'idle' | 'arming' | 'holding' | 'success'
   let progress = 0;           // 0..1
-  let raf = 0;
-  let lastTS = 0;
-  let armUntil = 0;
-  let upCancelTimer = 0;
-  let backUnlock = 0;
+  let raf = 0, lastTS = 0, armUntil = 0, upCancelTimer = 0, backUnlock = 0;
 
   function now(){ return performance.now(); }
-
   function startTick(){ if (!raf) { lastTS = now(); raf = requestAnimationFrame(tick); } }
   function stopTick(){ if (raf){ cancelAnimationFrame(raf); raf = 0; } }
 
-  function startArming(){
-    phase = 'arming';
-    armUntil = now() + ARM_MS;
-    startTick();
-  }
-  function startHolding(){
-    phase = 'holding';
-    document.body.classList.add('holding');
-    startTick();
-  }
+  function startArming(){ phase = 'arming'; armUntil = now() + ARM_MS; startTick(); }
+  function startHolding(){ phase = 'holding'; document.body.classList.add('holding'); startTick(); }
   function resetHold(){
-    phase = 'idle';
-    progress = 0;
-    bar.style.width = '0%';
-    document.body.classList.remove('holding');
-    clearTimeout(upCancelTimer); upCancelTimer = 0;
+    phase = 'idle'; progress = 0; bar.style.width = '0%';
+    document.body.classList.remove('holding'); clearTimeout(upCancelTimer); upCancelTimer = 0;
     stopTick();
   }
   function fireSuccess(){
@@ -172,62 +147,81 @@
 
     if (phase === 'arming'){
       if (ts >= armUntil){
-        if (active.size > 0) startHolding();
+        if (activeCount > 0) startHolding();
         else resetHold();
       }
     } else if (phase === 'holding'){
       const dt = Math.max(0, ts - lastTS); lastTS = ts;
-      if (active.size > 0){
-        progress += dt / HOLD_MS;                   // ignore motion; any touch counts
+      if (activeCount > 0){
+        progress += dt / HOLD_MS;                 // ignore motion entirely
         if (progress >= 1) fireSuccess();
         else bar.style.width = Math.floor(progress*100) + '%';
       } else {
-        // visual stop instantly (done in handlers); here we just wait micro guard to cancel progress
-        // if guard elapsed, resetHold() will be called by timer; stop ticking now
+        // visuals already stopped in handlers; cancel progress after tiny guard via timer
         stopTick();
       }
     }
 
-    if (phase === 'arming' || (phase === 'holding' && active.size > 0)){
+    if (phase === 'arming' || (phase === 'holding' && activeCount > 0)){
       raf = requestAnimationFrame(tick);
     }
   }
 
-  // Pointer handlers on the full-screen hitbox
-  hit.addEventListener('pointerdown', (e) => {
+  // ---- TOUCH first ----
+  hit.addEventListener('touchstart', (e) => {
+    useTouch = true;
     e.preventDefault();
-    // Ignore emulated mouse if touch in progress
-    if (e.pointerType === 'mouse' && [...active].some(id => id.toString().startsWith('t'))) return;
-
-    active.add(e.pointerId);
-    try { hit.setPointerCapture(e.pointerId); } catch(_){}
-
-    // If we were waiting to cancel, abort that (new finger joined)
-    if (upCancelTimer){ clearTimeout(upCancelTimer); upCancelTimer = 0; }
-
+    activeCount = e.touches.length;
     if (phase === 'idle') startArming();
-    else if (phase === 'holding') { /* continue */ }
+    // instant visuals on >0 touches only when holding starts
   }, { passive:false });
 
-  function onUpCancel(e){
-    // remove this contact
-    if (active.has(e.pointerId)) active.delete(e.pointerId);
+  function onTouchEnd(e){
+    e.preventDefault();
+    activeCount = e.touches.length;
 
-    if (phase === 'holding' && active.size === 0){
-      // Instant visual stop
+    // Stop scaling instantly when all fingers lift
+    if (phase === 'holding' && activeCount === 0){
       document.body.classList.remove('holding');
-
-      // Micro-up guard for canceling progress (prevents flicker)
       if (!upCancelTimer){
-        upCancelTimer = setTimeout(() => { upCancelTimer = 0; if (phase === 'holding' && active.size === 0) resetHold(); }, MICRO_UP_MS);
+        upCancelTimer = setTimeout(() => {
+          upCancelTimer = 0;
+          if (phase === 'holding' && activeCount === 0) resetHold();
+        }, MICRO_UP_MS);
       }
     }
   }
-  hit.addEventListener('pointerup', onUpCancel, { passive:true });
-  hit.addEventListener('pointercancel', onUpCancel, { passive:true });
-  // No pointerleave to avoid edge noise
+  hit.addEventListener('touchend', onTouchEnd, { passive:false });
+  hit.addEventListener('touchcancel', onTouchEnd, { passive:false });
 
-  // Success: double-tap/click to go back (after 4s lock)
+  // ---- POINTER fallback (ignored once touch path is used) ----
+  hit.addEventListener('pointerdown', (e) => {
+    if (useTouch) return;
+    e.preventDefault();
+    pointers.add(e.pointerId);
+    activeCount = pointers.size;
+    try { hit.setPointerCapture(e.pointerId); } catch(_){}
+    if (phase === 'idle') startArming();
+  }, { passive:false });
+
+  function onPointerUp(e){
+    if (useTouch) return;
+    pointers.delete(e.pointerId);
+    activeCount = pointers.size;
+    if (phase === 'holding' && activeCount === 0){
+      document.body.classList.remove('holding');
+      if (!upCancelTimer){
+        upCancelTimer = setTimeout(() => {
+          upCancelTimer = 0;
+          if (phase === 'holding' && activeCount === 0) resetHold();
+        }, MICRO_UP_MS);
+      }
+    }
+  }
+  hit.addEventListener('pointerup', onPointerUp, { passive:true });
+  hit.addEventListener('pointercancel', onPointerUp, { passive:true });
+
+  // Success: double-tap/click to go back (unlocked after 4s)
   let lastTap = 0;
   function beginBack(){
     const t = now();
@@ -252,7 +246,7 @@
     }
   });
 
-  // Optional: request fullscreen once
+  // One-time fullscreen
   addEventListener('pointerdown', () => {
     const el = document.documentElement;
     (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
