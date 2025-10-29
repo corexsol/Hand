@@ -144,35 +144,33 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // ULTRA-AGGRESSIVE palm rejection: lock to first small contact only
+    // COMMITMENT-BASED HOLD: Point of no return approach
     const HOLD_MS = 1200;
+    const COMMIT_MS = 360; // 30% threshold - after this, gesture CANNOT be cancelled by movement
     const BASE_SIDE = Math.min(innerWidth, innerHeight);
-    const BASE_TOL = Math.max(150, Math.floor(BASE_SIDE * 0.30)); // Increased to 30%
+    const MAX_MOVE = Math.max(200, Math.floor(BASE_SIDE * 0.35)); // Only checked before commitment
     
     let holdTimer = null;
+    let commitTimer = null;
     let holding = false;
-    let lockedId = null; // The ONE pointer we're tracking
+    let committed = false; // CRITICAL: Once true, nothing cancels except pointer up
+    let lockedId = null;
     let startX = 0, startY = 0;
     let activeTarget = null;
 
-    // STRICT: Only accept small contacts (actual fingers, not palm)
+    // Only accept reasonable finger touches (not giant palm contacts)
     function isValidFinger(e){
       const area = (e.width || 1) * (e.height || 1);
-      return area <= 1200; // MUCH stricter: only contacts < ~35x35px
+      return area <= 1600; // ~40x40px max
     }
 
     function startHold(e){
-      // Already in success state or holding? Ignore
       if (document.body.classList.contains('go') || holding) return;
-      
-      // CRITICAL: Only accept small, intentional finger touches
       if (!isValidFinger(e)) return;
-      
-      // CRITICAL: For touch, ONLY accept the primary pointer
       if (e.pointerType === 'touch' && !e.isPrimary) return;
       
-      // Lock in this pointer
       holding = true;
+      committed = false; // Start uncommitted
       lockedId = e.pointerId;
       activeTarget = e.target;
       startX = e.clientX;
@@ -183,6 +181,13 @@
       activeTarget.setPointerCapture?.(lockedId);
 
       clearTimeout(holdTimer);
+      clearTimeout(commitTimer);
+      
+      // After COMMIT_MS, the gesture becomes IRREVOCABLE
+      commitTimer = setTimeout(() => {
+        committed = true; // POINT OF NO RETURN - cannot cancel by movement anymore
+      }, COMMIT_MS);
+      
       holdTimer = setTimeout(fireSuccess, HOLD_MS);
     }
 
@@ -193,7 +198,9 @@
       requestAnimationFrame(() => {
         document.body.classList.remove('holding');
         holding = false;
+        committed = false;
         lockedId = null;
+        clearTimeout(commitTimer);
         activeTarget?.releasePointerCapture?.(lockedId);
         activeTarget = null;
       });
@@ -202,7 +209,9 @@
     function cancelHold(){
       if (!holding) return;
       holding = false;
+      committed = false;
       clearTimeout(holdTimer);
+      clearTimeout(commitTimer);
       document.body.classList.remove('holding');
       activeTarget?.releasePointerCapture?.(lockedId);
       lockedId = null;
@@ -210,37 +219,34 @@
     }
 
     function onPointerDown(e){
-      // Start hold only if not currently holding
       if (!holding) startHold(e);
-      // All other touches are completely ignored
     }
 
     function onPointerUp(e){
-      // Only care if it's our locked pointer
+      // ONLY pointerup of the locked finger can cancel
       if (holding && e.pointerId === lockedId) {
         cancelHold();
       }
     }
 
     function onPointerCancel(e){
-      // Only care if it's our locked pointer
+      // System cancel of locked finger
       if (holding && e.pointerId === lockedId) {
         cancelHold();
       }
     }
 
     function onPointerMove(e){
-      // CRITICAL: Only track movement of the locked pointer
       if (!holding || e.pointerId !== lockedId) return;
       
-      // CRITICAL: If contact suddenly becomes large (palm), ignore but don't cancel
-      if (!isValidFinger(e)) return;
+      // CRITICAL: After commitment point, movement is COMPLETELY IGNORED
+      if (committed) return;
       
+      // Before commitment, still check for excessive movement
       const dx = Math.abs(e.clientX - startX);
       const dy = Math.abs(e.clientY - startY);
       
-      // Much larger tolerance now
-      if (dx > BASE_TOL || dy > BASE_TOL) {
+      if (dx > MAX_MOVE || dy > MAX_MOVE) {
         cancelHold();
       }
     }
