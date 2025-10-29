@@ -68,14 +68,10 @@
       will-change:opacity,transform; z-index:3;
     }
     .success .glass{
-      position:absolute; inset:0;
-      background:rgba(3,4,24,.6);
-      backdrop-filter:blur(8px) saturate(125%);
-      -webkit-backdrop-filter:blur(8px) saturate(125%);
-      transform:translate3d(0,0,0);
-      pointer-events:none;
-      transition:opacity var(--t) var(--e);
-      opacity:1; will-change:opacity;
+      position:absolute; inset:0; background:rgba(3,4,24,.6);
+      backdrop-filter:blur(8px) saturate(125%); -webkit-backdrop-filter:blur(8px) saturate(125%);
+      transform:translate3d(0,0,0); pointer-events:none;
+      transition:opacity var(--t) var(--e); opacity:1; will-change:opacity;
     }
     .success .glass::after{
       content:''; position:absolute; inset:0; background:rgba(3,4,24,.25);
@@ -148,12 +144,14 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // Long-press (primary touch only), with higher jitter tolerance
+    // Long-press (primary touch), with large palm-safe tolerance + hysteresis
     const HOLD_MS = 1200;
     const BASE_SIDE = Math.min(innerWidth, innerHeight);
-    let MOVE_TOL = Math.max(64, Math.floor(BASE_SIDE * 0.12)); // ~12% of short side, min 64px
+    const BASE_TOL = Math.max(80, Math.floor(BASE_SIDE * 0.18)); // ~18% of short side, min 80px
+    let moveTol = BASE_TOL;
 
     let holdTimer=null, startX=0, startY=0, holding=false, activeId=null, activeTarget=null;
+    let moveCancelTimer=null;
 
     function startHold(e){
       if (document.body.classList.contains('go') || holding) return;
@@ -163,25 +161,28 @@
       activeTarget = e.target;
       startX = e.clientX; startY = e.clientY;
 
-      // Palm-aware bump: enlarge tolerance based on contact size (if provided)
+      // Palm-aware bump using contact size if available
       const contact = Math.max(e.width || 0, e.height || 0);
-      if (contact) MOVE_TOL = Math.max(MOVE_TOL, Math.ceil(contact * 0.8));
+      moveTol = Math.max(BASE_TOL, contact ? Math.ceil(contact * 1.2) : BASE_TOL);
 
       document.body.classList.remove('returning');
       document.body.classList.add('holding');
       activeTarget.setPointerCapture?.(activeId);
 
       clearTimeout(holdTimer);
-      holdTimer = setTimeout(() => {
-        if (!holding) return;
-        document.body.classList.add('go');
-        requestAnimationFrame(() => {
-          document.body.classList.remove('holding');
-          holding = false;
-          activeTarget?.releasePointerCapture?.(activeId);
-          activeId = null; activeTarget = null;
-        });
-      }, HOLD_MS);
+      holdTimer = setTimeout(fireSuccess, HOLD_MS);
+    }
+
+    function fireSuccess(){
+      if (!holding) return;
+      document.body.classList.add('go');
+      backUnlock = performance.now() + BACK_LOCK_MS; // lock back for 4s
+      requestAnimationFrame(() => {
+        document.body.classList.remove('holding');
+        holding = false;
+        activeTarget?.releasePointerCapture?.(activeId);
+        activeId = null; activeTarget = null;
+      });
     }
 
     function cancelHold(e){
@@ -189,6 +190,7 @@
       if (e && activeId !== null && e.pointerId !== activeId) return;
       holding = false;
       clearTimeout(holdTimer);
+      if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer=null; }
       document.body.classList.remove('holding');
       activeTarget?.releasePointerCapture?.(activeId);
       activeId = null; activeTarget = null;
@@ -197,29 +199,46 @@
     function onPointerDown(e){ if (!holding) startHold(e); }
     function onPointerUp(e){ cancelHold(e); }
     function onPointerCancel(e){ cancelHold(e); }
-    function onPointerLeave(e){ cancelHold(e); }
+    // NOTE: no pointerleave cancel -> reduces accidental cancels at edges
+
     function onPointerMove(e){
       if (!holding || e.pointerId !== activeId) return;
-      if (Math.abs(e.clientX - startX) > MOVE_TOL || Math.abs(e.clientY - startY) > MOVE_TOL) cancelHold(e);
+      const dx = Math.abs(e.clientX - startX);
+      const dy = Math.abs(e.clientY - startY);
+      const out = (dx > moveTol || dy > moveTol);
+
+      // Hysteresis: require being outside tolerance for 140ms before cancel
+      if (out) {
+        if (!moveCancelTimer) {
+          moveCancelTimer = setTimeout(() => { cancelHold(e); }, 140);
+        }
+      } else {
+        if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer=null; }
+      }
     }
 
     addEventListener('pointerdown', onPointerDown, { passive:true });
     addEventListener('pointerup', onPointerUp, { passive:true });
     addEventListener('pointercancel', onPointerCancel, { passive:true });
-    addEventListener('pointerleave', onPointerLeave, { passive:true });
     addEventListener('pointermove', onPointerMove, { passive:true });
 
-    // Double-tap/double-click to go back
+    // Back: double-tap/double-click with 4s lockout after success
+    const BACK_LOCK_MS = 4000;
+    let backUnlock = 0;
     let lastTap=0;
+
     const beginBack = () => {
-      if (!document.body.classList.contains('go')) return;
+      const now = performance.now();
+      if (!document.body.classList.contains('go') || now < backUnlock) return; // lock period
       success.classList.remove('intensify');
       success.classList.add('out');
     };
+
     success.addEventListener('dblclick', beginBack);
     success.addEventListener('pointerup', () => {
       const now = performance.now();
-      if (now - lastTap < 300) beginBack();
+      if (now < backUnlock) return; // ignore taps during lock
+      if (now - lastTap < 320) beginBack();
       lastTap = now;
     }, { passive:true });
 
@@ -235,7 +254,7 @@
       }
     });
 
-    // SW + fullscreen (fullscreen doesn’t force rotation; orientation comes from manifest or OS)
+    // SW + fullscreen
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
     const goFS = () => {
       const el = document.documentElement;
