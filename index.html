@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Hand Loop → Success</title>
+
+  <!-- PWA hooks -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#030418">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+
+  <!-- Preload video for faster start -->
+  <link rel="preload" as="video" href="assets/hand-loop.mp4" type="video/mp4">
+
+  <style>
+    :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); --hold:1200ms; }
+
+    /* Kiosk hardening */
+    *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
+    img,video{ -webkit-user-drag:none; user-drag:none; pointer-events:none; }
+    html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
+    body{ touch-action:none; } /* block pan/pinch while palm is down */
+
+    /* Stage: two synced videos (bg blurred/zoomed, fg crisp) */
+    .stage{ position:fixed; inset:0; background:var(--bg); }
+    .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
+    .stage .bg{
+      object-fit:cover;
+      transform:scale(1.15) translate3d(0,0,0);
+      filter:blur(12px) brightness(.7) saturate(1.08);
+      will-change:transform,opacity;
+      transition:transform var(--t) var(--e), opacity var(--t) var(--e);
+      z-index:0;
+    }
+    .stage .fg{
+      object-fit:contain;
+      background:transparent; /* show blurred bg through letterboxing */
+      transform:scale(1) translate3d(0,0,0);
+      will-change:transform,opacity;
+      transition:transform var(--t) var(--e), opacity var(--t) var(--e);
+      z-index:1;
+    }
+    .holding .stage .fg{
+      transform:scale(1.08) translate3d(0,0,0);
+      transition:transform var(--hold) linear, opacity var(--t) var(--e);
+    }
+    .go .stage .fg{
+      transform:scale(1.08) translate3d(0,0,0);
+      transition:none;
+    }
+    .returning .stage .fg{
+      transform:scale(1) translate3d(0,0,0);
+      transition:transform var(--t) var(--e), opacity var(--t) var(--e);
+    }
+
+    /* Long-press indicator (top) */
+    .hold-indicator{
+      position:fixed; left:50%; top:5vh; transform:translateX(-50%) translate3d(0,0,0);
+      width:min(42vw,360px); height:6px; border-radius:999px;
+      background:rgba(255,255,255,.18); overflow:hidden; opacity:0;
+      transition:opacity 150ms var(--e); pointer-events:none;
+      box-shadow:0 2px 16px rgba(0,0,0,.25) inset, 0 0 24px rgba(120,150,255,.15);
+      z-index:2;
+    }
+    .hold-indicator .bar{
+      height:100%; transform-origin:left; transform:scaleX(0) translate3d(0,0,0);
+      background:linear-gradient(90deg,#7aa2ff,#dfe7ff);
+      box-shadow:0 0 18px rgba(120,150,255,.35);
+      transition:none; will-change:transform;
+    }
+    .holding .hold-indicator{ opacity:.5; }
+    .holding .hold-indicator .bar{ transition:transform var(--hold) linear; transform:scaleX(1) translate3d(0,0,0); }
+
+    /* Success (glass over the same videos) */
+    .success{
+      position:fixed; inset:0; display:grid; place-items:center; text-align:center;
+      color:#e8eefc; background:transparent; padding:2rem;
+      opacity:0; visibility:hidden; transform:scale(.985) translate3d(0,0,0);
+      transition:opacity var(--t) var(--e), transform var(--t) var(--e), visibility 0s linear var(--t);
+      will-change:opacity,transform; z-index:3;
+    }
+    /* Base glass layer */
+    .success .glass{
+      position:absolute; inset:0;
+      background:rgba(3,4,24,.6);
+      backdrop-filter:blur(8px) saturate(125%);
+      -webkit-backdrop-filter:blur(8px) saturate(125%);
+      transform:translate3d(0,0,0);
+      pointer-events:none;
+      transition:opacity var(--t) var(--e);
+      opacity:1; will-change:opacity;
+    }
+    /* Extra blur layer that intensifies after text appears */
+    .success .glass::after{
+      content:'';
+      position:absolute; inset:0;
+      background:rgba(3,4,24,.25);
+      backdrop-filter:blur(16px) saturate(140%);
+      -webkit-backdrop-filter:blur(16px) saturate(140%);
+      transform:translate3d(0,0,0);
+      opacity:0;
+      transition:opacity 1.2s ease-out;
+      will-change:opacity;
+    }
+    .success.intensify .glass::after{ opacity:1; }
+
+    .success h1{
+      position:relative; z-index:1;
+      margin:0; letter-spacing:.02em; font-size:clamp(28px,5vw,80px);
+      color:#eef3ff;
+      text-shadow:
+        0 0 6px rgba(120,150,255,.55),
+        0 0 14px rgba(120,150,255,.45),
+        0 0 34px rgba(120,150,255,.35),
+        0 0 60px rgba(120,150,255,.25);
+      opacity:0; transform:translateY(8px) scale(.985) translate3d(0,0,0);
+      transition:opacity var(--t) var(--e), transform var(--t) var(--e);
+      will-change:opacity,transform;
+    }
+
+    /* Enter/exit states */
+    .go .success{
+      opacity:1; visibility:visible;
+      transform:scale(1) translate3d(0,0,0);
+      transition-delay:0s;
+    }
+    .go .success h1{ animation:rise .7s var(--e) forwards, neon 2.6s .25s ease-in-out infinite alternate; }
+    .success.out{ opacity:0; transition:opacity var(--t) var(--e); }
+    .success.out h1{ animation:fall .55s var(--e) forwards; }
+    .success.out .glass::after{ opacity:0; transition:opacity .4s ease-out; }
+
+    /* Keyframes */
+    @keyframes rise{ to{ opacity:1; transform:translateY(0) scale(1) translate3d(0,0,0); } }
+    @keyframes fall{ to{ opacity:0; transform:translateY(8px) scale(.985) translate3d(0,0,0); } }
+    @keyframes neon{
+      0% { text-shadow:0 0 6px rgba(120,150,255,.55),0 0 14px rgba(120,150,255,.45),0 0 34px rgba(120,150,255,.35),0 0 60px rgba(120,150,255,.25); }
+      100%{ text-shadow:0 0 10px rgba(170,200,255,.8),0 0 24px rgba(170,200,255,.65),0 0 52px rgba(170,200,255,.5),0 0 96px rgba(170,200,255,.4); }
+    }
+
+    @media (prefers-reduced-motion:reduce){
+      .stage video,.success,.success h1,.hold-indicator .bar,.success .glass::after{ transition:none; animation:none; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Stage: background (blurred) + foreground (crisp) -->
+  <div class="stage" id="stage">
+    <video class="bg" id="bgVid" src="assets/hand-loop.mp4" autoplay muted loop playsinline preload="auto"></video>
+    <video class="fg" id="fgVid" src="assets/hand-loop.mp4" autoplay muted loop playsinline preload="auto"></video>
+  </div>
+
+  <!-- Long-press progress -->
+  <div class="hold-indicator" aria-hidden="true"><div class="bar"></div></div>
+
+  <!-- Success (double-tap/double-click to return) -->
+  <section class="success" id="success">
+    <div class="glass" aria-hidden="true"></div>
+    <h1 id="title">تم التدشين بحمد الله</h1>
+  </section>
+
+  <script>
+    document.addEventListener('contextmenu', e => e.preventDefault());
+
+    const fg = document.getElementById('fgVid');
+    const bg = document.getElementById('bgVid');
+    const success = document.getElementById('success');
+    const title = document.getElementById('title');
+
+    // iOS/Android autoplay nudge
+    document.addEventListener('touchstart', () => fg.play().catch(()=>{}), { once:true });
+
+    /* Keep both videos in sync (optimized) */
+    let syncFrame;
+    function sync(){
+      if (Math.abs(fg.currentTime - bg.currentTime) > 0.15) bg.currentTime = fg.currentTime;
+      if (fg.paused && !bg.paused) fg.play().catch(()=>{});
+      if (!fg.paused && bg.paused) bg.play().catch(()=>{});
+    }
+    fg.addEventListener('timeupdate', () => { if (syncFrame) cancelAnimationFrame(syncFrame); syncFrame = requestAnimationFrame(sync); });
+    fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
+    fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
+
+    /* Long-press on main screen (multi-touch safe, primary touch only, scaled tolerance) */
+    const HOLD_MS = 1200;
+    const MOVE_TOL = Math.max(40, Math.floor(Math.min(innerWidth, innerHeight) * 0.045)); // ~4.5% of shorter side
+
+    let holdTimer=null, startX=0, startY=0, holding=false, activeId=null, activeTarget=null;
+
+    function startHold(e){
+      if (document.body.classList.contains('go') || holding) return;
+      if (e.pointerType === 'touch' && !e.isPrimary) return; // primary touch only
+      holding = true;
+      activeId = e.pointerId ?? 'mouse';
+      activeTarget = e.target;
+      startX = e.clientX; startY = e.clientY;
+      document.body.classList.remove('returning');
+      document.body.classList.add('holding');
+      activeTarget.setPointerCapture?.(activeId);
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => {
+        if (!holding) return;
+        document.body.classList.add('go');
+        requestAnimationFrame(() => {
+          document.body.classList.remove('holding');
+          holding = false;
+          activeTarget?.releasePointerCapture?.(activeId);
+          activeId = null; activeTarget = null;
+        });
+      }, HOLD_MS);
+    }
+
+    function cancelHold(e){
+      if (!holding) return;
+      if (e && activeId !== null && e.pointerId !== activeId) return; // ignore other fingers
+      holding = false;
+      clearTimeout(holdTimer);
+      document.body.classList.remove('holding');
+      activeTarget?.releasePointerCapture?.(activeId);
+      activeId = null; activeTarget = null;
+    }
+
+    function onPointerDown(e){ if (!holding) startHold(e); }
+    function onPointerUp(e){ cancelHold(e); }
+    function onPointerCancel(e){ cancelHold(e); }
+    function onPointerLeave(e){ cancelHold(e); }
+    function onPointerMove(e){
+      if (!holding || e.pointerId !== activeId) return;
+      if (Math.abs(e.clientX - startX) > MOVE_TOL || Math.abs(e.clientY - startY) > MOVE_TOL) cancelHold(e);
+    }
+
+    addEventListener('pointerdown', onPointerDown, { passive:true });
+    addEventListener('pointerup', onPointerUp, { passive:true });
+    addEventListener('pointercancel', onPointerCancel, { passive:true });
+    addEventListener('pointerleave', onPointerLeave, { passive:true });
+    addEventListener('pointermove', onPointerMove, { passive:true });
+
+    /* Back: double-tap/double-click on success */
+    let lastTap=0;
+    const beginBack = () => {
+      if (!document.body.classList.contains('go')) return;
+      success.classList.remove('intensify'); // stop extra blur
+      success.classList.add('out');          // text OUT + fade overlay
+    };
+    success.addEventListener('dblclick', beginBack);
+    success.addEventListener('pointerup', () => {
+      const now = performance.now();
+      if (now - lastTap < 300) beginBack();
+      lastTap = now;
+    }, { passive:true });
+
+    // After text rises, intensify blur behind it
+    title.addEventListener('animationstart', (e) => {
+      if (e.animationName === 'rise') {
+        setTimeout(() => { success.classList.add('intensify'); }, 700);
+      }
+    });
+
+    // After text OUT, return to initial state smoothly
+    title.addEventListener('animationend', (e) => {
+      if (e.animationName === 'fall' && success.classList.contains('out')) {
+        success.classList.remove('out');
+        document.body.classList.remove('go');
+        document.body.classList.add('returning');
+        setTimeout(() => { document.body.classList.remove('returning'); }, 720);
+      }
+    });
+
+    /* PWA: register Service Worker + request fullscreen on first interaction */
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(console.error);
+    }
+    const goFS = () => {
+      const el = document.documentElement;
+      (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
+    };
+    window.addEventListener('pointerdown', goFS, { once:true });
+  </script>
+</body>
+</html>
