@@ -18,7 +18,7 @@
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     img,video{ -webkit-user-drag:none; user-drag:none; pointer-events:none; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
-    html,body,.stage,video{ touch-action:none; } /* kill gestures */
+    html,body,.stage,video{ touch-action:none; } /* disable gestures */
 
     /* Stage: two synced videos (bg blurred, fg crisp) */
     .stage{ position:fixed; inset:0; background:var(--bg); }
@@ -33,7 +33,7 @@
     }
     .stage .fg{
       object-fit:contain;
-      background:transparent; /* show blurred bg through letterboxing */
+      background:transparent;
       transform:scale(1) translate3d(0,0,0);
       will-change:transform,opacity;
       transition:transform var(--t) var(--e), opacity var(--t) var(--e);
@@ -46,7 +46,7 @@
     .go .stage .fg{ transform:scale(1.08) translate3d(0,0,0); transition:none; }
     .returning .stage .fg{ transform:scale(1) translate3d(0,0,0); transition:transform var(--t) var(--e), opacity var(--t) var(--e); }
 
-    /* Indicator (we drive width via JS for pause/resume) */
+    /* Progress (driven by JS, not CSS animation) */
     .hold-indicator{
       position:fixed; left:50%; top:5vh; transform:translateX(-50%) translate3d(0,0,0);
       width:min(42vw,360px); height:6px; border-radius:999px;
@@ -62,7 +62,7 @@
     }
     .holding .hold-indicator{ opacity:.5; }
 
-    /* Success (glass over same videos) */
+    /* Success overlay */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:transparent; padding:2rem;
@@ -153,20 +153,25 @@
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
   fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-  // ---- Robust hold with accumulate/pause, centroid smoothing, join/leave grace ----
-  const HOLD_MS = 1200;
-  const BACK_LOCK_MS = 4000;
-  const OUT_GRACE_MS = 220;    // must be out-of-bounds this long to cancel
-  const LIFT_GAP_MS = 200;     // allow brief all-fingers-up gap
-  const SMOOTH_ALPHA = 0.18;   // centroid smoothing factor/frame
+  // ---- Robust hold with accumulate/pause and INSANE jitter tolerance ----
+  // Tuning
+  const HOLD_MS      = 1200;   // required hold time
+  const BACK_LOCK_MS = 4000;   // lock return for 4s after success
 
-  const SHORT = Math.min(innerWidth, innerHeight);
-  const BASE_TOL = Math.max(120, Math.floor(SHORT * 0.20)); // forgiving base
-  let moveTol = BASE_TOL;
+  // Insane jitter tolerance (ignore motion while any finger is down)
+  const INSANE_TOL   = true;
+  const SHORT        = Math.min(innerWidth, innerHeight);
+  const BASE_TOL     = INSANE_TOL ? 1e9 : Math.max(120, Math.floor(SHORT * 0.20));
+  let   moveTol      = BASE_TOL;
+
+  // Grace windows
+  const OUT_GRACE_MS = INSANE_TOL ? 1000 : 220; // out-of-bounds grace (unused if INSANE_TOL + anyDown)
+  const LIFT_GAP_MS  = INSANE_TOL ? 600  : 200; // allow brief all-up gap
+  const SMOOTH_ALPHA = 0.18;
 
   const down = new Map(); // id -> {x,y,w,h}
   let holding = false;
-  let progress = 0;           // 0..1 accumulated
+  let progress = 0;                // 0..1
   let baseline = {x:0,y:0};
   let smooth = {x:0,y:0};
   let graceUntil = 0;
@@ -184,9 +189,10 @@
     return n ? {x:sx/n, y:sy/n} : {x:0, y:0};
   }
   function bumpTolFromContacts(){
+    if (INSANE_TOL) { moveTol = 1e9; return; }
     let maxC = 0;
     down.forEach(p => { maxC = Math.max(maxC, p.w||0, p.h||0); });
-    if (maxC) moveTol = Math.max(moveTol, Math.ceil(maxC * 1.5)); // more palm-safe
+    if (maxC) moveTol = Math.max(moveTol, Math.ceil(maxC * 1.5));
   }
 
   function startHoldIfNeeded(ts){
@@ -223,7 +229,7 @@
 
   function tick(ts){
     tickId = 0;
-    if (document.body.classList.contains('go')) return; // stop ticking in success
+    if (document.body.classList.contains('go')) return;
 
     // Update centroid & smoothing
     const c = centroid();
@@ -236,10 +242,10 @@
     const anyDown = down.size > 0;
     const inGrace = ts < graceUntil;
 
-    // Compute in-bounds
+    // Motion bounds (ignored when INSANE_TOL and any finger down)
     const dx = Math.abs(smooth.x - baseline.x);
     const dy = Math.abs(smooth.y - baseline.y);
-    const inBounds = inGrace || (dx <= moveTol && dy <= moveTol);
+    const inBounds = INSANE_TOL ? anyDown : (inGrace || (dx <= moveTol && dy <= moveTol));
 
     // Lift-gap handling
     if (!anyDown) {
@@ -248,7 +254,7 @@
       liftDeadline = 0;
     }
 
-    // Accumulate progress only if contact exists and in-bounds
+    // Accumulate progress only if in-bounds with at least one touch
     if (anyDown && inBounds) {
       progress += dt / HOLD_MS;
       if (progress >= 1) {
@@ -256,7 +262,7 @@
       } else {
         bar.style.width = `${Math.floor(progress * 100)}%`;
       }
-      outDeadline = 0; // reset out-of-bounds grace
+      outDeadline = 0;
     } else {
       // out-of-bounds or no fingers: apply grace windows
       if (liftDeadline && ts >= liftDeadline) {
@@ -267,13 +273,12 @@
       }
     }
 
-    // Keep running while holding
     if (!document.body.classList.contains('go') && (holding || progress>0)) {
       tickId = requestAnimationFrame(tick);
     }
   }
 
-  // Pointer handlers (non-passive to allow preventDefault)
+  // Pointer handlers
   addEventListener('pointerdown', (e) => {
     e.preventDefault();
     down.set(e.pointerId, {x:e.clientX, y:e.clientY, w:e.width||0, h:e.height||0});
@@ -291,7 +296,6 @@
 
   function endPointer(id){
     down.delete(id);
-    // Re-center baseline softly when composition changes
     if (holding && down.size>0) {
       const c = centroid();
       baseline.x = baseline.x*0.8 + c.x*0.2;
@@ -301,7 +305,7 @@
   }
   addEventListener('pointerup',   e => { e.preventDefault(); endPointer(e.pointerId); }, { passive:false });
   addEventListener('pointercancel', e => { e.preventDefault(); endPointer(e.pointerId); }, { passive:false });
-  // no pointerleave to avoid false cancels
+  // no pointerleave to avoid edge cancels
 
   // Success screen: 4s lockout, then double-tap to go back
   let lastTap=0;
@@ -328,7 +332,7 @@
       document.body.classList.remove('go');
       document.body.classList.add('returning');
       setTimeout(() => { document.body.classList.remove('returning'); }, 720);
-      // reset hold state for next run
+      // reset for next run
       progress = 0; bar.style.width = '0%';
     }
   });
