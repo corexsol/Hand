@@ -12,12 +12,15 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <style>
-    :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); --hold:1200ms; }
+    :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); }
+
+    /* Kiosk hardening */
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     img,video{ -webkit-user-drag:none; user-drag:none; pointer-events:none; }
-    html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
-    html,body,.stage,video{ touch-action:none; } /* kill gestures on Honor */
+    html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
+    html,body,.stage,video{ touch-action:none; } /* kill gestures */
 
+    /* Stage: two synced videos (bg blurred, fg crisp) */
     .stage{ position:fixed; inset:0; background:var(--bg); }
     .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
     .stage .bg{
@@ -30,7 +33,7 @@
     }
     .stage .fg{
       object-fit:contain;
-      background:transparent;
+      background:transparent; /* show blurred bg through letterboxing */
       transform:scale(1) translate3d(0,0,0);
       will-change:transform,opacity;
       transition:transform var(--t) var(--e), opacity var(--t) var(--e);
@@ -38,11 +41,12 @@
     }
     .holding .stage .fg{
       transform:scale(1.08) translate3d(0,0,0);
-      transition:transform var(--hold) linear, opacity var(--t) var(--e);
+      transition:transform 1200ms linear, opacity var(--t) var(--e);
     }
     .go .stage .fg{ transform:scale(1.08) translate3d(0,0,0); transition:none; }
     .returning .stage .fg{ transform:scale(1) translate3d(0,0,0); transition:transform var(--t) var(--e), opacity var(--t) var(--e); }
 
+    /* Indicator (we drive width via JS for pause/resume) */
     .hold-indicator{
       position:fixed; left:50%; top:5vh; transform:translateX(-50%) translate3d(0,0,0);
       width:min(42vw,360px); height:6px; border-radius:999px;
@@ -52,14 +56,13 @@
       z-index:2;
     }
     .hold-indicator .bar{
-      height:100%; transform-origin:left; transform:scaleX(0) translate3d(0,0,0);
+      height:100%; width:0%;
       background:linear-gradient(90deg,#7aa2ff,#dfe7ff);
       box-shadow:0 0 18px rgba(120,150,255,.35);
-      transition:none; will-change:transform;
     }
     .holding .hold-indicator{ opacity:.5; }
-    .holding .hold-indicator .bar{ transition:transform var(--hold) linear; transform:scaleX(1) translate3d(0,0,0); }
 
+    /* Success (glass over same videos) */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:transparent; padding:2rem;
@@ -68,7 +71,8 @@
       will-change:opacity,transform; z-index:3;
     }
     .success .glass{
-      position:absolute; inset:0; background:rgba(3,4,24,.6);
+      position:absolute; inset:0;
+      background:rgba(3,4,24,.6);
       backdrop-filter:blur(8px) saturate(125%); -webkit-backdrop-filter:blur(8px) saturate(125%);
       transform:translate3d(0,0,0); pointer-events:none;
       transition:opacity var(--t) var(--e); opacity:1; will-change:opacity;
@@ -89,7 +93,7 @@
       will-change:opacity,transform;
     }
 
-    .go .success{ opacity:1; visibility:visible; transform:scale(1) translate3d(0,0,0); transition-delay:0s; }
+    .go .success{ opacity:1; visibility:visible; transform:scale(1) translate3d(0,0,0); }
     .go .success h1{ animation:rise .7s var(--e) forwards, neon 2.6s .25s ease-in-out infinite alternate; }
     .success.out{ opacity:0; transition:opacity var(--t) var(--e); }
     .success.out h1{ animation:fall .55s var(--e) forwards; }
@@ -103,187 +107,238 @@
     }
 
     @media (prefers-reduced-motion:reduce){
-      .stage video,.success,.success h1,.hold-indicator .bar,.success .glass::after{ transition:none; animation:none; }
+      .stage video,.success,.success h1,.hold-indicator{ transition:none; animation:none; }
     }
   </style>
 </head>
 <body>
-  <div class="stage" id="stage">
+  <!-- Videos -->
+  <div class="stage">
     <video class="bg" id="bgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
     <video class="fg" id="fgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
   </div>
 
-  <div class="hold-indicator" aria-hidden="true"><div class="bar"></div></div>
+  <!-- Progress -->
+  <div class="hold-indicator" aria-hidden="true"><div class="bar" id="bar"></div></div>
 
+  <!-- Success -->
   <section class="success" id="success">
     <div class="glass" aria-hidden="true"></div>
     <h1 id="title">تم التدشين بحمد الله</h1>
   </section>
 
   <script>
-    document.addEventListener('contextmenu', e => e.preventDefault());
+  // Disable context menu
+  addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
 
-    const fg = document.getElementById('fgVid');
-    const bg = document.getElementById('bgVid');
-    const success = document.getElementById('success');
-    const title = document.getElementById('title');
+  const fg = document.getElementById('fgVid');
+  const bg = document.getElementById('bgVid');
+  const success = document.getElementById('success');
+  const title = document.getElementById('title');
+  const bar = document.getElementById('bar');
 
-    // Start videos on first interaction
-    const nudgePlay = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
-    addEventListener('touchstart', nudgePlay, { once:true });
-    addEventListener('pointerdown', nudgePlay, { once:true });
+  // Start playback on first interaction
+  const nudgePlay = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
+  addEventListener('touchstart', nudgePlay, { once:true, passive:false });
+  addEventListener('pointerdown', nudgePlay, { once:true, passive:false });
 
-    // Keep videos in sync
-    let raf;
-    function sync(){
-      if (Math.abs(fg.currentTime - bg.currentTime) > 0.15) bg.currentTime = fg.currentTime;
-      if (fg.paused && !bg.paused) fg.play().catch(()=>{});
-      if (!fg.paused && bg.paused) bg.play().catch(()=>{});
+  // Keep videos in sync
+  let rafSync;
+  function syncV() {
+    if (Math.abs(fg.currentTime - bg.currentTime) > 0.15) bg.currentTime = fg.currentTime;
+    if (fg.paused && !bg.paused) fg.play().catch(()=>{});
+    if (!fg.paused && bg.paused) bg.play().catch(()=>{});
+  }
+  fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rafSync); rafSync = requestAnimationFrame(syncV); });
+  fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
+  fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
+
+  // ---- Robust hold with accumulate/pause, centroid smoothing, join/leave grace ----
+  const HOLD_MS = 1200;
+  const BACK_LOCK_MS = 4000;
+  const OUT_GRACE_MS = 220;    // must be out-of-bounds this long to cancel
+  const LIFT_GAP_MS = 200;     // allow brief all-fingers-up gap
+  const SMOOTH_ALPHA = 0.18;   // centroid smoothing factor/frame
+
+  const SHORT = Math.min(innerWidth, innerHeight);
+  const BASE_TOL = Math.max(120, Math.floor(SHORT * 0.20)); // forgiving base
+  let moveTol = BASE_TOL;
+
+  const down = new Map(); // id -> {x,y,w,h}
+  let holding = false;
+  let progress = 0;           // 0..1 accumulated
+  let baseline = {x:0,y:0};
+  let smooth = {x:0,y:0};
+  let graceUntil = 0;
+  let outDeadline = 0;
+  let liftDeadline = 0;
+  let tickId = 0;
+  let lastTS = 0;
+  let backUnlock = 0;
+
+  function now(){ return performance.now(); }
+
+  function centroid(){
+    let sx=0, sy=0, n=0;
+    down.forEach(p => { sx+=p.x; sy+=p.y; n++; });
+    return n ? {x:sx/n, y:sy/n} : {x:0, y:0};
+  }
+  function bumpTolFromContacts(){
+    let maxC = 0;
+    down.forEach(p => { maxC = Math.max(maxC, p.w||0, p.h||0); });
+    if (maxC) moveTol = Math.max(moveTol, Math.ceil(maxC * 1.5)); // more palm-safe
+  }
+
+  function startHoldIfNeeded(ts){
+    if (holding || down.size === 0 || document.body.classList.contains('go')) return;
+    holding = true;
+    moveTol = BASE_TOL;
+    bumpTolFromContacts();
+    baseline = centroid();
+    smooth = {...baseline};
+    graceUntil = ts + 250; // start grace
+    outDeadline = 0; liftDeadline = 0;
+    document.body.classList.remove('returning');
+    document.body.classList.add('holding');
+    if (!tickId) { lastTS = ts; tickId = requestAnimationFrame(tick); }
+  }
+
+  function fireSuccess(){
+    if (document.body.classList.contains('go')) return;
+    document.body.classList.add('go');
+    backUnlock = now() + BACK_LOCK_MS;
+    document.body.classList.remove('holding');
+    holding = false;
+    progress = 1;
+    bar.style.width = '100%';
+  }
+
+  function cancelHoldCore(){
+    holding = false;
+    progress = 0;
+    bar.style.width = '0%';
+    outDeadline = 0; liftDeadline = 0;
+    document.body.classList.remove('holding');
+  }
+
+  function tick(ts){
+    tickId = 0;
+    if (document.body.classList.contains('go')) return; // stop ticking in success
+
+    // Update centroid & smoothing
+    const c = centroid();
+    smooth.x += (c.x - smooth.x) * SMOOTH_ALPHA;
+    smooth.y += (c.y - smooth.y) * SMOOTH_ALPHA;
+
+    const dt = Math.max(0, ts - lastTS);
+    lastTS = ts;
+
+    const anyDown = down.size > 0;
+    const inGrace = ts < graceUntil;
+
+    // Compute in-bounds
+    const dx = Math.abs(smooth.x - baseline.x);
+    const dy = Math.abs(smooth.y - baseline.y);
+    const inBounds = inGrace || (dx <= moveTol && dy <= moveTol);
+
+    // Lift-gap handling
+    if (!anyDown) {
+      if (!liftDeadline) liftDeadline = ts + LIFT_GAP_MS;
+    } else {
+      liftDeadline = 0;
     }
-    fg.addEventListener('timeupdate', () => { if (raf) cancelAnimationFrame(raf); raf = requestAnimationFrame(sync); });
-    fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
-    fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // --- Robust long-press using centroid of all touches ---
-    const HOLD_MS = 1200;
-    const BACK_LOCK_MS = 4000;
-
-    const SHORT = Math.min(innerWidth, innerHeight);
-    const BASE_TOL = Math.max(120, Math.floor(SHORT * 0.20)); // very forgiving
-    let moveTol = BASE_TOL;
-
-    const down = new Map(); // id -> {x,y,w,h}
-    let holding = false, holdTimer = null;
-    let baseline = {x:0,y:0};
-    let graceUntil = 0;
-    let moveCancelTimer = null;
-    let backUnlock = 0;
-
-    const now = () => performance.now();
-
-    function centroid() {
-      let sx = 0, sy = 0, n = 0;
-      down.forEach(p => { sx += p.x; sy += p.y; n++; });
-      return n ? { x: sx/n, y: sy/n } : { x: 0, y: 0 };
-    }
-    function bumpTolFromContacts(){
-      let maxContact = 0;
-      down.forEach(p => { maxContact = Math.max(maxContact, p.w||0, p.h||0); });
-      if (maxContact) moveTol = Math.max(moveTol, Math.ceil(maxContact * 1.4));
-    }
-
-    function startHoldIfNeeded(){
-      if (holding || down.size === 0 || document.body.classList.contains('go')) return;
-      holding = true;
-      baseline = centroid();
-      moveTol = BASE_TOL;
-      bumpTolFromContacts();
-      graceUntil = now() + 220; // grace at start
-      document.body.classList.remove('returning');
-      document.body.classList.add('holding');
-      clearTimeout(holdTimer);
-      holdTimer = setTimeout(fireSuccess, HOLD_MS);
-    }
-
-    function fireSuccess(){
-      if (!holding) return;
-      document.body.classList.add('go');
-      backUnlock = now() + BACK_LOCK_MS;
-      requestAnimationFrame(() => {
-        document.body.classList.remove('holding');
-        holding = false;
-      });
-    }
-
-    function cancelHoldCore(){
-      holding = false;
-      clearTimeout(holdTimer);
-      if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer = null; }
-      document.body.classList.remove('holding');
-    }
-
-    // Pointer events
-    addEventListener('pointerdown', (e) => {
-      // record/update this contact
-      down.set(e.pointerId, { x:e.clientX, y:e.clientY, w:e.width||0, h:e.height||0 });
-
-      // when new finger joins, be generous: extend tolerance + grace
-      bumpTolFromContacts();
-      graceUntil = Math.max(graceUntil, now() + 180);
-
-      startHoldIfNeeded();
-    }, { passive:true });
-
-    addEventListener('pointermove', (e) => {
-      if (down.has(e.pointerId)) {
-        down.set(e.pointerId, { x:e.clientX, y:e.clientY, w:e.width||0, h:e.height||0 });
-      }
-      if (!holding) return;
-
-      if (now() < graceUntil) return; // ignore during grace
-
-      const c = centroid();
-      const dx = Math.abs(c.x - baseline.x);
-      const dy = Math.abs(c.y - baseline.y);
-      const out = (dx > moveTol || dy > moveTol);
-
-      // require staying out for a short period before cancel
-      if (out) {
-        if (!moveCancelTimer) moveCancelTimer = setTimeout(() => { cancelHoldCore(); }, 180);
+    // Accumulate progress only if contact exists and in-bounds
+    if (anyDown && inBounds) {
+      progress += dt / HOLD_MS;
+      if (progress >= 1) {
+        fireSuccess();
       } else {
-        if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer = null; }
+        bar.style.width = `${Math.floor(progress * 100)}%`;
       }
-    }, { passive:true });
-
-    function endPointer(id){
-      down.delete(id);
-      if (!holding) return;
-      if (down.size === 0) {
+      outDeadline = 0; // reset out-of-bounds grace
+    } else {
+      // out-of-bounds or no fingers: apply grace windows
+      if (liftDeadline && ts >= liftDeadline) {
         cancelHoldCore();
       } else {
-        // re-center baseline and give grace so lifting doesn’t abort
-        baseline = centroid();
-        graceUntil = now() + 200;
+        if (!outDeadline) outDeadline = ts + OUT_GRACE_MS;
+        else if (ts >= outDeadline) cancelHoldCore();
       }
     }
-    addEventListener('pointerup',   e => endPointer(e.pointerId), { passive:true });
-    addEventListener('pointercancel', e => endPointer(e.pointerId), { passive:true });
-    // no pointerleave to avoid false cancels at edges
 
-    // --- Back: double-tap/click with post-success lock ---
-    let lastTap = 0;
-    const beginBack = () => {
-      const t = now();
-      if (!document.body.classList.contains('go') || t < backUnlock) return;
-      success.classList.remove('intensify');
-      success.classList.add('out');
-    };
-    success.addEventListener('dblclick', beginBack);
-    success.addEventListener('pointerup', () => {
-      const t = now();
-      if (t < backUnlock) return;
-      if (t - lastTap < 320) beginBack();
-      lastTap = t;
-    }, { passive:true });
+    // Keep running while holding
+    if (!document.body.classList.contains('go') && (holding || progress>0)) {
+      tickId = requestAnimationFrame(tick);
+    }
+  }
 
-    title.addEventListener('animationstart', (e) => {
-      if (e.animationName === 'rise') setTimeout(() => { success.classList.add('intensify'); }, 700);
-    });
-    title.addEventListener('animationend', (e) => {
-      if (e.animationName === 'fall' && success.classList.contains('out')) {
-        success.classList.remove('out');
-        document.body.classList.remove('go');
-        document.body.classList.add('returning');
-        setTimeout(() => { document.body.classList.remove('returning'); }, 720);
-      }
-    });
+  // Pointer handlers (non-passive to allow preventDefault)
+  addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    down.set(e.pointerId, {x:e.clientX, y:e.clientY, w:e.width||0, h:e.height||0});
+    bumpTolFromContacts();
+    graceUntil = Math.max(graceUntil, now() + 200); // joining grace
+    startHoldIfNeeded(now());
+  }, { passive:false });
 
-    // SW + fullscreen
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
-    addEventListener('pointerdown', () => {
-      const el = document.documentElement;
-      (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
-    }, { once:true });
+  addEventListener('pointermove', (e) => {
+    e.preventDefault();
+    if (down.has(e.pointerId)) {
+      down.set(e.pointerId, {x:e.clientX, y:e.clientY, w:e.width||0, h:e.height||0});
+    }
+  }, { passive:false });
+
+  function endPointer(id){
+    down.delete(id);
+    // Re-center baseline softly when composition changes
+    if (holding && down.size>0) {
+      const c = centroid();
+      baseline.x = baseline.x*0.8 + c.x*0.2;
+      baseline.y = baseline.y*0.8 + c.y*0.2;
+      graceUntil = now() + 200; // grace after lift
+    }
+  }
+  addEventListener('pointerup',   e => { e.preventDefault(); endPointer(e.pointerId); }, { passive:false });
+  addEventListener('pointercancel', e => { e.preventDefault(); endPointer(e.pointerId); }, { passive:false });
+  // no pointerleave to avoid false cancels
+
+  // Success screen: 4s lockout, then double-tap to go back
+  let lastTap=0;
+  function beginBack(){
+    const t = now();
+    if (!document.body.classList.contains('go') || t < backUnlock) return;
+    success.classList.remove('intensify');
+    success.classList.add('out');
+  }
+  success.addEventListener('dblclick', beginBack);
+  success.addEventListener('pointerup', () => {
+    const t = now();
+    if (t < backUnlock) return;
+    if (t - lastTap < 320) beginBack();
+    lastTap = t;
+  }, { passive:true });
+
+  title.addEventListener('animationstart', (e) => {
+    if (e.animationName === 'rise') setTimeout(() => { success.classList.add('intensify'); }, 700);
+  });
+  title.addEventListener('animationend', (e) => {
+    if (e.animationName === 'fall' && success.classList.contains('out')) {
+      success.classList.remove('out');
+      document.body.classList.remove('go');
+      document.body.classList.add('returning');
+      setTimeout(() => { document.body.classList.remove('returning'); }, 720);
+      // reset hold state for next run
+      progress = 0; bar.style.width = '0%';
+    }
+  });
+
+  // SW + fullscreen
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
+  addEventListener('pointerdown', () => {
+    const el = document.documentElement;
+    (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
+  }, { once:true, passive:true });
   </script>
 </body>
 </html>
