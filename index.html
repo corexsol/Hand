@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
   <title>Hand Loop → Success</title>
 
-  <!-- PWA hooks (optional for offline/app-install) -->
+  <!-- Optional PWA hooks -->
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#030418">
   <link rel="icon" href="icons/icon-192.png">
@@ -118,33 +118,42 @@
   fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs); rs = requestAnimationFrame(syncV); });
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
 
-  // Insane tolerance, NO lift gap: cancel immediately when all fingers lift
-  const HOLD_MS      = 1200;
-  const BACK_LOCK_MS = 4000;
+  // --- Hold logic with tiny "arming" window to absorb instant palm burst ---
+  const HOLD_MS      = 1200;   // required hold
+  const ARM_MS       = 180;    // collect contacts before starting hold
+  const BACK_LOCK_MS = 4000;   // lock return after success
 
   let downCount = 0;
-  let holding = false;
-  let progress = 0;   // 0..1
+  let phase = 'idle';          // 'idle' | 'arming' | 'holding' | 'success'
+  let progress = 0;            // 0..1
   let raf = 0;
   let lastTS = 0;
+  let armUntil = 0;
   let backUnlock = 0;
 
   function fireSuccess(){
-    if (document.body.classList.contains('go')) return;
+    if (phase === 'success') return;
+    phase = 'success';
     document.body.classList.add('go');
     document.body.classList.remove('holding');
     backUnlock = performance.now() + BACK_LOCK_MS;
-    holding = false; progress = 1; bar.style.width = '100%';
+    progress = 1; bar.style.width = '100%';
     stopTick();
   }
   function resetHold(){
-    holding = false; progress = 0; bar.style.width = '0%';
+    phase = 'idle';
+    progress = 0; bar.style.width = '0%';
     document.body.classList.remove('holding');
     stopTick();
   }
-  function startHold(){
-    if (holding || document.body.classList.contains('go')) return;
-    holding = true;
+  function startArming(){
+    phase = 'arming';
+    armUntil = performance.now() + ARM_MS;
+    // no UI change yet; we only scale once 'holding'
+    if (!raf) { lastTS = performance.now(); raf = requestAnimationFrame(tick); }
+  }
+  function startHolding(){
+    phase = 'holding';
     document.body.classList.add('holding');
     lastTS = performance.now();
     if (!raf) raf = requestAnimationFrame(tick);
@@ -155,45 +164,55 @@
 
   function tick(ts){
     raf = 0;
-    if (document.body.classList.contains('go')) return;
+    if (phase === 'success') return;
 
-    const dt = Math.max(0, ts - lastTS); lastTS = ts;
+    if (phase === 'arming'){
+      if (ts >= armUntil){
+        if (downCount > 0) startHolding();
+        else resetHold(); // nothing remained
+      }
+    } else if (phase === 'holding'){
+      const dt = Math.max(0, ts - lastTS); lastTS = ts;
+      if (downCount > 0){
+        progress += dt / HOLD_MS;                 // accumulate regardless of motion
+        if (progress >= 1) fireSuccess();
+        else bar.style.width = Math.floor(progress*100) + '%';
+      } else {
+        resetHold();                               // immediate cancel when all fingers lift
+      }
+    }
 
-    if (downCount > 0){
-      progress += dt / HOLD_MS;                // accumulate regardless of motion
-      if (progress >= 1) fireSuccess();
-      else bar.style.width = Math.floor(progress*100) + '%';
-      raf = requestAnimationFrame(tick);       // keep running
-    } else {
-      resetHold();                              // immediate cancel on all-up
+    if (phase === 'arming' || phase === 'holding'){
+      raf = requestAnimationFrame(tick);
     }
   }
 
   addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    if (phase === 'success') return;
     downCount++;
-    if (!holding) startHold();
+    if (phase === 'idle') startArming();
   }, { passive:false });
 
   function onUp(){
-    downCount = Math.max(0, downCount - 1);
-    if (downCount === 0 && !document.body.classList.contains('go')) resetHold(); // stop scaling instantly
+    if (downCount > 0) downCount--;
+    // If we lifted everything during arming, we stay in arming until armUntil, then resetHold()
+    if (phase === 'holding' && downCount === 0) resetHold();
   }
   addEventListener('pointerup', onUp, { passive:true });
   addEventListener('pointercancel', onUp, { passive:true });
-  // no pointerleave
 
   // Success: double-tap/click to go back (after lock)
   let lastTap = 0;
   function beginBack(){
     const t = performance.now();
-    if (!document.body.classList.contains('go') || t < backUnlock) return;
+    if (phase !== 'success' || t < backUnlock) return;
     success.classList.add('out');
   }
   success.addEventListener('dblclick', beginBack);
   success.addEventListener('pointerup', () => {
     const t = performance.now();
-    if (t < backUnlock) return;
+    if (phase !== 'success' || t < backUnlock) return;
     if (t - lastTap < 320) beginBack();
     lastTap = t;
   }, { passive:true });
