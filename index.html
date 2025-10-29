@@ -11,6 +11,9 @@
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
+  <!-- Preload video for faster start -->
+  <link rel="preload" as="video" href="assets/hand-loop.mp4" type="video/mp4">
+
   <style>
     :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); --hold:1200ms; }
 
@@ -144,8 +147,8 @@
 <body>
   <!-- Stage: background (blurred) + foreground (crisp) -->
   <div class="stage" id="stage">
-    <video class="bg" id="bgVid" src="assest/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
-    <video class="fg" id="fgVid" src="assest/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
+    <video class="bg" id="bgVid" src="assets/hand-loop.mp4" autoplay muted loop playsinline preload="auto"></video>
+    <video class="fg" id="fgVid" src="assets/hand-loop.mp4" autoplay muted loop playsinline preload="auto"></video>
   </div>
 
   <!-- Long-press progress -->
@@ -165,10 +168,8 @@
     const success = document.getElementById('success');
     const title = document.getElementById('title');
 
-    // Nudge playback on first interaction (touch or mouse/stylus)
-    const nudgePlay = () => { fg.play().catch(()=>{}); bg.play?.().catch(()=>{}); };
-    window.addEventListener('touchstart', nudgePlay, { once:true });
-    window.addEventListener('pointerdown', nudgePlay, { once:true });
+    // iOS/Android autoplay nudge
+    document.addEventListener('touchstart', () => fg.play().catch(()=>{}), { once:true });
 
     /* Keep both videos in sync (optimized) */
     let syncFrame;
@@ -278,5 +279,3 @@
   </script>
 </body>
 </html>
-
-
