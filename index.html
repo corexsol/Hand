@@ -144,56 +144,43 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // Long-press with multi-touch resilience and palm rejection
+    // ULTRA-AGGRESSIVE palm rejection: lock to first small contact only
     const HOLD_MS = 1200;
     const BASE_SIDE = Math.min(innerWidth, innerHeight);
-    const BASE_TOL = Math.max(100, Math.floor(BASE_SIDE * 0.22));
-    let moveTol = BASE_TOL;
+    const BASE_TOL = Math.max(150, Math.floor(BASE_SIDE * 0.30)); // Increased to 30%
+    
+    let holdTimer = null;
+    let holding = false;
+    let lockedId = null; // The ONE pointer we're tracking
+    let startX = 0, startY = 0;
+    let activeTarget = null;
 
-    const down = new Map(); // pointerId -> {x,y,contactSize}
-    let holdTimer=null, startX=0, startY=0, holding=false, activeId=null, activeTarget=null;
-    let moveCancelTimer=null;
-
-    // IMPROVED: More aggressive tolerance calculation based on contact size
-    function updateTolFromContact(e){
-      const contact = Math.max(e.width || 0, e.height || 0);
-      if (contact) {
-        // Much more aggressive scaling for large contacts (whole hand)
-        // Small contact (finger): ~1.5x base
-        // Large contact (palm): ~3-5x base
-        const scaleFactor = 1.5 + (contact / 50); // Increases with contact size
-        moveTol = Math.max(moveTol, Math.ceil(BASE_TOL * scaleFactor));
-      }
-    }
-
-    // IMPROVED: Ignore extremely large contacts (palm rejection)
-    function isPalmTouch(e){
+    // STRICT: Only accept small contacts (actual fingers, not palm)
+    function isValidFinger(e){
       const area = (e.width || 1) * (e.height || 1);
-      return area > 2500; // Ignore contacts > 50x50px (likely palm)
+      return area <= 1200; // MUCH stricter: only contacts < ~35x35px
     }
 
     function startHold(e){
+      // Already in success state or holding? Ignore
       if (document.body.classList.contains('go') || holding) return;
+      
+      // CRITICAL: Only accept small, intentional finger touches
+      if (!isValidFinger(e)) return;
+      
+      // CRITICAL: For touch, ONLY accept the primary pointer
       if (e.pointerType === 'touch' && !e.isPrimary) return;
       
-      // IMPROVED: Skip if it's a palm touch
-      if (isPalmTouch(e)) return;
-
+      // Lock in this pointer
       holding = true;
-      activeId = e.pointerId ?? 'mouse';
+      lockedId = e.pointerId;
       activeTarget = e.target;
-      startX = e.clientX; startY = e.clientY;
-      
-      // FIXED: Reset tolerance at start of each hold
-      moveTol = BASE_TOL;
-      updateTolFromContact(e);
-
-      const contactSize = Math.max(e.width || 0, e.height || 0);
-      down.set(activeId, {x:startX, y:startY, contactSize});
+      startX = e.clientX;
+      startY = e.clientY;
       
       document.body.classList.remove('returning');
       document.body.classList.add('holding');
-      activeTarget.setPointerCapture?.(activeId);
+      activeTarget.setPointerCapture?.(lockedId);
 
       clearTimeout(holdTimer);
       holdTimer = setTimeout(fireSuccess, HOLD_MS);
@@ -206,72 +193,55 @@
       requestAnimationFrame(() => {
         document.body.classList.remove('holding');
         holding = false;
-        activeTarget?.releasePointerCapture?.(activeId);
-        activeId = null; activeTarget = null;
+        lockedId = null;
+        activeTarget?.releasePointerCapture?.(lockedId);
+        activeTarget = null;
       });
     }
 
-    function cancelHoldCore(){
+    function cancelHold(){
+      if (!holding) return;
       holding = false;
       clearTimeout(holdTimer);
-      if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer=null; }
       document.body.classList.remove('holding');
-      activeTarget?.releasePointerCapture?.(activeId);
-      activeId = null; activeTarget = null;
-      down.clear();
-    }
-
-    // If active pointer lifts, switch to another finger if any remain
-    function handlePointerEnd(id){
-      down.delete(id);
-      if (!holding) return;
-      if (id !== activeId) return;
-      if (down.size === 0) {
-        cancelHoldCore();
-      } else {
-        // adopt another existing contact (last inserted)
-        const nextId = Array.from(down.keys()).pop();
-        activeId = nextId;
-        const p = down.get(nextId);
-        startX = p.x; startY = p.y;
-        // keep timer running, no reset
-      }
+      activeTarget?.releasePointerCapture?.(lockedId);
+      lockedId = null;
+      activeTarget = null;
     }
 
     function onPointerDown(e){
-      // IMPROVED: Ignore palm touches completely
-      if (!isPalmTouch(e)) {
-        const contactSize = Math.max(e.width || 0, e.height || 0);
-        down.set(e.pointerId, {x:e.clientX, y:e.clientY, contactSize});
-        updateTolFromContact(e);
-      }
+      // Start hold only if not currently holding
       if (!holding) startHold(e);
+      // All other touches are completely ignored
     }
 
-    function onPointerUp(e){ handlePointerEnd(e.pointerId); }
-    function onPointerCancel(e){ handlePointerEnd(e.pointerId); }
+    function onPointerUp(e){
+      // Only care if it's our locked pointer
+      if (holding && e.pointerId === lockedId) {
+        cancelHold();
+      }
+    }
+
+    function onPointerCancel(e){
+      // Only care if it's our locked pointer
+      if (holding && e.pointerId === lockedId) {
+        cancelHold();
+      }
+    }
 
     function onPointerMove(e){
-      // IMPROVED: Update position only for tracked (non-palm) contacts
-      if (down.has(e.pointerId) && !isPalmTouch(e)) {
-        const contactSize = Math.max(e.width || 0, e.height || 0);
-        down.set(e.pointerId, {x:e.clientX, y:e.clientY, contactSize});
-      }
+      // CRITICAL: Only track movement of the locked pointer
+      if (!holding || e.pointerId !== lockedId) return;
       
-      if (!holding || e.pointerId !== activeId) return;
+      // CRITICAL: If contact suddenly becomes large (palm), ignore but don't cancel
+      if (!isValidFinger(e)) return;
       
-      // IMPROVED: Ignore movement if current contact is palm-sized
-      if (isPalmTouch(e)) return;
-
       const dx = Math.abs(e.clientX - startX);
       const dy = Math.abs(e.clientY - startY);
-      const out = (dx > moveTol || dy > moveTol);
-
-      // IMPROVED: Longer delay before canceling (300ms instead of 160ms)
-      if (out) {
-        if (!moveCancelTimer) moveCancelTimer = setTimeout(() => { cancelHoldCore(); }, 300);
-      } else {
-        if (moveCancelTimer) { clearTimeout(moveCancelTimer); moveCancelTimer=null; }
+      
+      // Much larger tolerance now
+      if (dx > BASE_TOL || dy > BASE_TOL) {
+        cancelHold();
       }
     }
 
