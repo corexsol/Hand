@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
   <title>Hand Loop → Success</title>
 
-  <!-- PWA hooks (keep if you want offline/app-install) -->
+  <!-- PWA hooks (optional for offline/app-install) -->
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#030418">
   <link rel="icon" href="icons/icon-192.png">
@@ -54,7 +54,7 @@
     }
     .holding .hold-indicator{ opacity:.5; }
 
-    /* Success overlay (simple, no extra blur timing) */
+    /* Success overlay */
     .success{
       position:fixed; inset:0; display:grid; place-items:center; text-align:center;
       color:#e8eefc; background:rgba(3,4,24,.6);
@@ -95,7 +95,6 @@
   </section>
 
   <script>
-  // Basic hardening
   addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
 
   const fg = document.getElementById('fgVid');
@@ -119,17 +118,15 @@
   fg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs); rs = requestAnimationFrame(syncV); });
   fg.addEventListener('play', () => { bg.play().catch(()=>{}); syncV(); });
 
-  // --- Insane-tolerance hold: no motion checks/smoothing ---
-  const HOLD_MS      = 1200;  // required hold
-  const LIFT_GAP_MS  = 600;   // allow brief all-up gap
-  const BACK_LOCK_MS = 4000;  // lock back after success
+  // Insane tolerance, NO lift gap: cancel immediately when all fingers lift
+  const HOLD_MS      = 1200;
+  const BACK_LOCK_MS = 4000;
 
   let downCount = 0;
   let holding = false;
-  let progress = 0;       // 0..1
+  let progress = 0;   // 0..1
   let raf = 0;
   let lastTS = 0;
-  let liftDeadline = 0;
   let backUnlock = 0;
 
   function fireSuccess(){
@@ -138,11 +135,22 @@
     document.body.classList.remove('holding');
     backUnlock = performance.now() + BACK_LOCK_MS;
     holding = false; progress = 1; bar.style.width = '100%';
+    stopTick();
   }
   function resetHold(){
     holding = false; progress = 0; bar.style.width = '0%';
     document.body.classList.remove('holding');
-    liftDeadline = 0;
+    stopTick();
+  }
+  function startHold(){
+    if (holding || document.body.classList.contains('go')) return;
+    holding = true;
+    document.body.classList.add('holding');
+    lastTS = performance.now();
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+  function stopTick(){
+    if (raf){ cancelAnimationFrame(raf); raf = 0; }
   }
 
   function tick(ts){
@@ -151,41 +159,29 @@
 
     const dt = Math.max(0, ts - lastTS); lastTS = ts;
 
-    const anyDown = downCount > 0;
-    if (anyDown){
-      // accumulate; no motion checks at all
-      progress += dt / HOLD_MS;
+    if (downCount > 0){
+      progress += dt / HOLD_MS;                // accumulate regardless of motion
       if (progress >= 1) fireSuccess();
       else bar.style.width = Math.floor(progress*100) + '%';
-      liftDeadline = 0;
+      raf = requestAnimationFrame(tick);       // keep running
     } else {
-      // pause progress; cancel only if the all-up gap exceeds LIFT_GAP_MS
-      if (!liftDeadline) liftDeadline = ts + LIFT_GAP_MS;
-      else if (ts >= liftDeadline) resetHold();
-    }
-
-    if (!document.body.classList.contains('go') && (holding || progress>0)){
-      raf = requestAnimationFrame(tick);
+      resetHold();                              // immediate cancel on all-up
     }
   }
 
   addEventListener('pointerdown', (e) => {
     e.preventDefault();
     downCount++;
-    if (!holding && !document.body.classList.contains('go')){
-      holding = true;
-      document.body.classList.add('holding');
-      lastTS = performance.now();
-      if (!raf) raf = requestAnimationFrame(tick);
-    }
+    if (!holding) startHold();
   }, { passive:false });
 
-  function endPointer(){
+  function onUp(){
     downCount = Math.max(0, downCount - 1);
+    if (downCount === 0 && !document.body.classList.contains('go')) resetHold(); // stop scaling instantly
   }
-  addEventListener('pointerup', endPointer, { passive:true });
-  addEventListener('pointercancel', endPointer, { passive:true });
-  // no pointerleave (edge noise)
+  addEventListener('pointerup', onUp, { passive:true });
+  addEventListener('pointercancel', onUp, { passive:true });
+  // no pointerleave
 
   // Success: double-tap/click to go back (after lock)
   let lastTap = 0;
@@ -207,13 +203,12 @@
       success.classList.remove('out');
       document.body.classList.remove('go');
       document.body.classList.add('returning');
-      // small timeout to let fg scale back
       setTimeout(() => { document.body.classList.remove('returning'); }, 720);
       resetHold();
     }
   });
 
-  // Optional: SW + fullscreen (leave if you want the kiosk behavior/offline)
+  // Optional kiosk helpers
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
   addEventListener('pointerdown', () => {
     const el = document.documentElement;
