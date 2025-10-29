@@ -144,48 +144,54 @@
     fg.addEventListener('play', () => { bg.play().catch(()=>{}); sync(); });
     fg.addEventListener('loadedmetadata', () => { try { bg.currentTime = fg.currentTime; } catch(_){} });
 
-    // COMMITMENT-BASED HOLD: Point of no return approach
+    // ULTIMATE PALM REJECTION: Wait-and-confirm single touch approach
     const HOLD_MS = 1200;
-    const COMMIT_MS = 360; // 30% threshold - after this, gesture CANNOT be cancelled by movement
+    const CONFIRM_DELAY = 80; // Wait 80ms to confirm it's truly single touch
+    const COMMIT_MS = 360; // After this, can't cancel by movement
     const BASE_SIDE = Math.min(innerWidth, innerHeight);
-    const MAX_MOVE = Math.max(200, Math.floor(BASE_SIDE * 0.35)); // Only checked before commitment
+    const MAX_MOVE = Math.max(200, Math.floor(BASE_SIDE * 0.4));
     
+    let confirmTimer = null;
     let holdTimer = null;
     let commitTimer = null;
     let holding = false;
-    let committed = false; // CRITICAL: Once true, nothing cancels except pointer up
+    let committed = false;
     let lockedId = null;
     let startX = 0, startY = 0;
     let activeTarget = null;
+    let activePointers = new Set(); // Track ALL active pointers
 
-    // Only accept reasonable finger touches (not giant palm contacts)
     function isValidFinger(e){
       const area = (e.width || 1) * (e.height || 1);
-      return area <= 1600; // ~40x40px max
+      return area <= 1600;
     }
 
-    function startHold(e){
-      if (document.body.classList.contains('go') || holding) return;
-      if (!isValidFinger(e)) return;
-      if (e.pointerType === 'touch' && !e.isPrimary) return;
+    function tryStartHold(firstEvent){
+      // CRITICAL: Check if this is STILL the only touch
+      if (activePointers.size !== 1) {
+        return; // Multi-touch detected, abort
+      }
       
+      // Check if still valid
+      if (!isValidFinger(firstEvent)) {
+        return;
+      }
+      
+      // SUCCESS: Confirmed single small touch, start the hold
       holding = true;
-      committed = false; // Start uncommitted
-      lockedId = e.pointerId;
-      activeTarget = e.target;
-      startX = e.clientX;
-      startY = e.clientY;
+      committed = false;
+      lockedId = firstEvent.pointerId;
+      activeTarget = firstEvent.target;
+      startX = firstEvent.clientX;
+      startY = firstEvent.clientY;
       
       document.body.classList.remove('returning');
       document.body.classList.add('holding');
       activeTarget.setPointerCapture?.(lockedId);
 
-      clearTimeout(holdTimer);
-      clearTimeout(commitTimer);
-      
-      // After COMMIT_MS, the gesture becomes IRREVOCABLE
+      // Set commitment and success timers
       commitTimer = setTimeout(() => {
-        committed = true; // POINT OF NO RETURN - cannot cancel by movement anymore
+        committed = true;
       }, COMMIT_MS);
       
       holdTimer = setTimeout(fireSuccess, HOLD_MS);
@@ -219,30 +225,55 @@
     }
 
     function onPointerDown(e){
-      if (!holding) startHold(e);
+      // Track this pointer
+      activePointers.add(e.pointerId);
+      
+      // If already in success or holding, ignore
+      if (document.body.classList.contains('go') || holding) return;
+      
+      // If this is the FIRST touch and it's valid
+      if (activePointers.size === 1 && isValidFinger(e) && e.isPrimary) {
+        // Don't start immediately - wait to see if more touches come
+        clearTimeout(confirmTimer);
+        confirmTimer = setTimeout(() => tryStartHold(e), CONFIRM_DELAY);
+      } else {
+        // Multi-touch detected or invalid - cancel any pending confirmation
+        clearTimeout(confirmTimer);
+      }
     }
 
     function onPointerUp(e){
-      // ONLY pointerup of the locked finger can cancel
+      activePointers.delete(e.pointerId);
+      
+      // If it's our locked pointer, cancel the hold
       if (holding && e.pointerId === lockedId) {
         cancelHold();
+      }
+      
+      // If confirmation was pending and this was the only touch, cancel it
+      if (!holding && activePointers.size === 0) {
+        clearTimeout(confirmTimer);
       }
     }
 
     function onPointerCancel(e){
-      // System cancel of locked finger
+      activePointers.delete(e.pointerId);
+      
       if (holding && e.pointerId === lockedId) {
         cancelHold();
+      }
+      
+      if (!holding && activePointers.size === 0) {
+        clearTimeout(confirmTimer);
       }
     }
 
     function onPointerMove(e){
       if (!holding || e.pointerId !== lockedId) return;
       
-      // CRITICAL: After commitment point, movement is COMPLETELY IGNORED
+      // After commitment, ignore all movement
       if (committed) return;
       
-      // Before commitment, still check for excessive movement
       const dx = Math.abs(e.clientX - startX);
       const dy = Math.abs(e.clientY - startY);
       
