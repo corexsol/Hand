@@ -2,25 +2,33 @@
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <!-- Viewport & insets fix -->
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
   <title>Hand Tap → Success (Video)</title>
 
-  <!-- PWA hooks (keep sw.js & manifest in project) -->
+  <!-- PWA hooks -->
   <link rel="manifest" href="manifest.webmanifest">
-  <meta name="theme-color" content="#030418" />
+  <meta name="theme-color" content="#030418">
+  <meta name="theme-color" content="#030418" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="icons/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 
   <style>
-    :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); }
+    :root { --bg:#030418; --t:720ms; --e:cubic-bezier(.2,.8,.2,1); --vh:1vh; color-scheme: dark; }
 
+    /* Hardening */
     *{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
     html,body{ height:100%; margin:0; background:var(--bg); overflow:hidden; overscroll-behavior:none; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; }
     html,body,.stage,video,#hit,.success{ touch-action:none; }
+    :fullscreen, ::backdrop{ background:#030418; }
+
+    /* Use visual viewport height to kill bottom white bar */
+    .stage, .success, #hit{ position:fixed; inset:0; height:calc(var(--vh) * 100) !important; }
+    video{ width:100vw; height:calc(var(--vh) * 100) !important; }
 
     /* Scene 1: blurred cover bg + crisp contain fg */
-    .stage{ position:fixed; inset:0; background:var(--bg); }
-    .stage video{ position:absolute; inset:0; width:100vw; height:100vh; }
+    .stage{ background:var(--bg); }
+    .stage video{ position:absolute; inset:0; }
     .stage .bg{
       object-fit:cover; transform:scale(1.15);
       filter:blur(12px) brightness(.7) saturate(1.08);
@@ -36,11 +44,12 @@
     .go .stage .fg{ transform:scale(1.06); filter:blur(2px) brightness(.9); transition:transform 520ms var(--e), filter 520ms var(--e); }
     .returning .stage .fg{ transform:scale(1); filter:none; }
 
-    #hit{ position:fixed; inset:0; z-index:2; background:transparent; }
+    /* Fullscreen hitbox */
+    #hit{ z-index:2; background:transparent; }
 
     /* Scene 2: overlay + SAME video as bg (blurred cover) + fg (crisp contain) */
     .success{
-      position:fixed; inset:0; z-index:4;
+      z-index:4;
       background:rgba(3,4,24,0);
       backdrop-filter:blur(0px) saturate(110%); -webkit-backdrop-filter:blur(0px) saturate(110%);
       opacity:0; visibility:hidden; transform:scale(.985);
@@ -58,7 +67,7 @@
       background:rgba(3,4,24,.55);
     }
 
-    .success video{ position:absolute; inset:0; width:100vw; height:100vh; pointer-events:none; }
+    .success video{ position:absolute; inset:0; pointer-events:none; }
 
     /* Second-scene background (same source), animated in */
     .success .sv-bg{
@@ -75,32 +84,23 @@
       filter:blur(12px) brightness(.72) saturate(1.1);
     }
     .success.out .sv-bg{
-      opacity:0;
-      transform:scale(1.12);
-      filter:blur(16px) brightness(.7) saturate(1.05);
+      opacity:0; transform:scale(1.12); filter:blur(16px) brightness(.7) saturate(1.05);
       transition: opacity 420ms var(--e), transform 420ms var(--e), filter 420ms var(--e);
     }
 
     /* Second-scene foreground (same source), pronounced “IN” */
     .success .sv-fg{
       object-fit:contain;
-      opacity:0;
-      transform:translateY(22px) scale(.972);
-      filter:blur(14px);
-      z-index:1;
-      will-change:opacity,transform,filter;
+      opacity:0; transform:translateY(22px) scale(.972); filter:blur(14px);
+      z-index:1; will-change:opacity,transform,filter;
     }
-    .go .success .sv-fg{
-      animation: svIn 820ms var(--e) 80ms both;
-    }
-    .success.out .sv-fg{
-      animation: svOut 420ms var(--e) forwards;
-    }
+    .go .success .sv-fg{ animation: svIn 820ms var(--e) 80ms both; }
+    .success.out .sv-fg{ animation: svOut 420ms var(--e) forwards; }
 
     @keyframes svIn{
       0%   { opacity:0; transform:translateY(22px) scale(.972); filter:blur(14px); }
-      60%  { opacity:1; transform:translateY(-3px) scale(1.012); filter:blur(0px); }
-      100% { opacity:1; transform:translateY(0)    scale(1.000); filter:blur(0px); }
+      60%  { opacity:1; transform:translateY(-3px) scale(1.012); filter:blur(0); }
+      100% { opacity:1; transform:translateY(0)    scale(1.000); filter:blur(0); }
     }
     @keyframes svOut{
       0%   { opacity:1; transform:translateY(0) scale(1); filter:blur(0); }
@@ -115,16 +115,32 @@
     <video class="fg" id="fgVid" src="assets/hand-loop.mp4" preload="auto" autoplay muted loop playsinline></video>
   </div>
 
+  <!-- Tap area -->
   <div id="hit" aria-hidden="true"></div>
 
   <!-- Scene 2 (same video as bg + fg) -->
   <section class="success" id="success">
+    <!-- Remove loop if you want one-shot + freeze via handlers -->
     <video class="sv-bg" id="svBg" src="assets/hand-loop2.mp4" preload="auto" muted playsinline></video>
     <video class="sv-fg" id="svFg" src="assets/hand-loop2.mp4" preload="auto" muted playsinline></video>
   </section>
 
   <script>
+  // Prevent context menu
   addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
+
+  // Visual viewport height fix (kills bottom white bar)
+  (function(){
+    function setVh(){
+      const h = (window.visualViewport ? visualViewport.height : innerHeight);
+      document.documentElement.style.setProperty('--vh', (h * 0.01) + 'px');
+    }
+    setVh();
+    addEventListener('resize', setVh, {passive:true});
+    addEventListener('orientationchange', () => setTimeout(setVh, 250), {passive:true});
+    ['fullscreenchange','webkitfullscreenchange','msfullscreenchange']
+      .forEach(ev => document.addEventListener(ev, () => setTimeout(setVh, 50), {passive:true}));
+  })();
 
   const fg = document.getElementById('fgVid');
   const bg = document.getElementById('bgVid');
@@ -156,20 +172,16 @@
   svFg.addEventListener('timeupdate', () => { cancelAnimationFrame(rs2); rs2 = requestAnimationFrame(syncScene2); });
 
   function resetSuccessVideos(){
-    [svFg, svBg].forEach(v => { try { v.pause(); } catch{} });
+    [svFg, svBg].forEach(v => { try { v.pause(); } catch{}; });
     const set0 = v => { try { v.currentTime = 0; } catch{} };
     if (svFg.readyState >= 1) set0(svFg); else svFg.addEventListener('loadedmetadata', () => set0(svFg), {once:true});
     if (svBg.readyState >= 1) set0(svBg); else svBg.addEventListener('loadedmetadata', () => set0(svBg), {once:true});
   }
   function startSuccessVideos(){
-    // start both exactly together on next frame
-    requestAnimationFrame(() => {
-      svBg.play().catch(()=>{});
-      svFg.play().catch(()=>{});
-    });
+    requestAnimationFrame(() => { svBg.play().catch(()=>{}); svFg.play().catch(()=>{}); });
   }
   function stopAndResetSuccessVideos(){
-    [svFg, svBg].forEach(v => { try { v.pause(); } catch{}; try { v.currentTime = 0; } catch{} });
+    [svFg, svBg].forEach(v => { try { v.pause(); } catch{}; try { v.currentTime = 0; } catch{}; });
   }
 
   // Tap-to-trigger-on-release
@@ -258,7 +270,7 @@
     try { await screen.orientation.lock('portrait'); } catch(_){}
   }, { once:true, passive:true });
 
-  // Service worker (optional)
+  // Service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.error);
   }
