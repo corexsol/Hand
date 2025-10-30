@@ -1,15 +1,14 @@
 {
-  "id": "/",
-  "name": "Hand Launch",
-  "short_name": "HandLaunch",
+  "name": "HandTap",
+  "short_name": "HandTap",
   "lang": "ar",
-  "dir": "rtl",
-  "start_url": "./?source=pwa",
+  "start_url": "./?pwa=1",
   "scope": "./",
-  "display": "fullscreen",
-  "background_color": "#030418",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "portrait",
   "theme_color": "#030418",
-  "orientation": "landscape",
+  "background_color": "#030418",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
