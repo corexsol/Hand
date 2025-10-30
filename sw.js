@@ -1,5 +1,5 @@
-/* HandTap SW – range-aware video cache */
-const CACHE = 'handtap-v5';
+/* HandTap SW – v6: canonical full-body cache + proper Range slicing */
+const CACHE = 'handtap-v6';
 const ASSETS = [
   './',
   './index.html',
@@ -13,15 +13,17 @@ const ASSETS = [
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    await c.addAll(ASSETS);
+    // Cache absolute URLs to avoid key mismatches
+    const toCache = ASSETS.map(p => new URL(p, self.location).href);
+    await c.addAll(toCache);
     await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.map(k => (k !== CACHE ? caches.delete(k) : null)));
+    // Clear old caches
+    for (const k of await caches.keys()) if (k !== CACHE) await caches.delete(k);
     try { await self.registration.navigationPreload.enable(); } catch {}
     await self.clients.claim();
   })());
@@ -34,7 +36,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  // Navigations: network first → fallback to cached index
+  // Navigations: network-first, fallback to cached index
   if (req.mode === 'navigate') {
     e.respondWith((async () => {
       try {
@@ -43,61 +45,57 @@ self.addEventListener('fetch', (e) => {
         return await fetch(req);
       } catch {
         const c = await caches.open(CACHE);
-        return (await c.match('./index.html')) || Response.error();
+        return (await c.match(new URL('./index.html', self.location).href)) || Response.error();
       }
     })());
     return;
   }
 
-  // MP4: range-aware, cache-first
+  // MP4: serve from a canonical full-body entry, never cache 206
   if (sameOrigin && url.pathname.endsWith('.mp4')) {
     e.respondWith((async () => {
       const c = await caches.open(CACHE);
-      // Match ignoring Range header (Cache API ignores most headers)
-      let cached = await c.match(req, { ignoreSearch: false });
-      if (!cached) {
-        // If not precached, fetch, store, and continue
-        try {
-          const net = await fetch(req);
-          if (net.ok) c.put(req, net.clone());
-          cached = net;
-        } catch {
-          return Response.error();
+
+      // Canonical cache key: URL without search/hash
+      const key = new URL(req.url);
+      key.search = ''; key.hash = '';
+      const cacheKey = key.href;
+
+      // Ensure we have a full-body 200 response in cache
+      let full = await c.match(cacheKey);
+      if (!full || full.status !== 200) {
+        // Fetch a full body (no Range), then store under canonical key
+        let net;
+        try { net = await fetch(cacheKey, { cache: 'no-store' }); } catch { /* noop */ }
+        if (net && net.ok) {
+          await c.put(cacheKey, net.clone());
+          full = net;
+        } else {
+          // Fallback: pass through original request (may be Range), do NOT cache if 206
+          try { return await fetch(req); } catch { return Response.error(); }
         }
       }
 
       const range = req.headers.get('range');
       if (!range) {
-        // Serve full response with Accept-Ranges so the player can reuse it
-        const full = await cached.blob();
-        return new Response(full, {
-          status: 200,
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Accept-Ranges': 'bytes',
-            'Content-Length': String(full.size),
-            'Cache-Control': 'public, max-age=31536000, immutable'
-          }
-        });
+        // Return as-is (no blob read); browsers can still seek if needed
+        return full;
       }
 
-      // Parse "bytes=start-end"
-      const m = /bytes=(\d+)-(\d+)?/.exec(range);
-      if (!m) return cached;
+      // Slice from cached full blob
+      const blob = await full.blob();
+      const size = blob.size;
 
-      const size = (await cached.blob()).size;
+      const m = /bytes=(\d+)-(\d+)?/.exec(range);
+      if (!m) return full;
+
       let start = Number(m[1]);
       let end = m[2] ? Number(m[2]) : size - 1;
-      start = isFinite(start) ? start : 0;
-      end = isFinite(end) ? Math.min(end, size - 1) : size - 1;
-      if (start > end || start >= size) {
-        return new Response(null, {
-          status: 416,
-          headers: { 'Content-Range': `bytes */${size}` }
-        });
-      }
+      if (!Number.isFinite(start)) start = 0;
+      if (!Number.isFinite(end)) end = size - 1;
+      start = Math.max(0, Math.min(start, size - 1));
+      end   = Math.max(start, Math.min(end,  size - 1));
 
-      const blob = await cached.blob();
       const chunk = blob.slice(start, end + 1);
       return new Response(chunk, {
         status: 206,
@@ -124,6 +122,5 @@ self.addEventListener('fetch', (e) => {
       }).catch(() => null);
       return hit || (await netP) || Response.error();
     })());
-    return;
   }
 });
