@@ -1,5 +1,5 @@
-/* HandTap SW – portrait PWA, offline precache, sane fetch */
-const CACHE = 'handtap-v4';
+/* HandTap SW – range-aware video cache */
+const CACHE = 'handtap-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -20,10 +20,8 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    // Cleanup old versions
     const keys = await caches.keys();
     await Promise.all(keys.map(k => (k !== CACHE ? caches.delete(k) : null)));
-    // Enable faster navigations if supported
     try { await self.registration.navigationPreload.enable(); } catch {}
     await self.clients.claim();
   })());
@@ -36,14 +34,13 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  // App navigations: network-first, fallback to cached index
+  // Navigations: network first → fallback to cached index
   if (req.mode === 'navigate') {
     e.respondWith((async () => {
       try {
         const preload = await e.preloadResponse;
         if (preload) return preload;
-        const net = await fetch(req);
-        return net;
+        return await fetch(req);
       } catch {
         const c = await caches.open(CACHE);
         return (await c.match('./index.html')) || Response.error();
@@ -52,28 +49,71 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Media (mp4): cache-first; fetch & fill cache if missing
+  // MP4: range-aware, cache-first
   if (sameOrigin && url.pathname.endsWith('.mp4')) {
     e.respondWith((async () => {
       const c = await caches.open(CACHE);
-      const hit = await c.match(req);
-      if (hit) return hit;
-      try {
-        const net = await fetch(req);
-        // Only cache successful same-origin responses
-        if (net.ok && net.type !== 'opaque') c.put(req, net.clone());
-        return net;
-      } catch {
-        // Best-effort fallback to whichever video is available
-        return (await c.match('./assets/hand-loop2.mp4')) ||
-               (await c.match('./assets/hand-loop.mp4')) ||
-               Response.error();
+      // Match ignoring Range header (Cache API ignores most headers)
+      let cached = await c.match(req, { ignoreSearch: false });
+      if (!cached) {
+        // If not precached, fetch, store, and continue
+        try {
+          const net = await fetch(req);
+          if (net.ok) c.put(req, net.clone());
+          cached = net;
+        } catch {
+          return Response.error();
+        }
       }
+
+      const range = req.headers.get('range');
+      if (!range) {
+        // Serve full response with Accept-Ranges so the player can reuse it
+        const full = await cached.blob();
+        return new Response(full, {
+          status: 200,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': String(full.size),
+            'Cache-Control': 'public, max-age=31536000, immutable'
+          }
+        });
+      }
+
+      // Parse "bytes=start-end"
+      const m = /bytes=(\d+)-(\d+)?/.exec(range);
+      if (!m) return cached;
+
+      const size = (await cached.blob()).size;
+      let start = Number(m[1]);
+      let end = m[2] ? Number(m[2]) : size - 1;
+      start = isFinite(start) ? start : 0;
+      end = isFinite(end) ? Math.min(end, size - 1) : size - 1;
+      if (start > end || start >= size) {
+        return new Response(null, {
+          status: 416,
+          headers: { 'Content-Range': `bytes */${size}` }
+        });
+      }
+
+      const blob = await cached.blob();
+      const chunk = blob.slice(start, end + 1);
+      return new Response(chunk, {
+        status: 206,
+        headers: {
+          'Content-Type': 'video/mp4',
+          'Content-Length': String(chunk.size),
+          'Content-Range': `bytes ${start}-${end}/${size}`,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=31536000, immutable'
+        }
+      });
     })());
     return;
   }
 
-  // Other same-origin GET: stale-while-revalidate
+  // Other same-origin: stale-while-revalidate
   if (sameOrigin) {
     e.respondWith((async () => {
       const c = await caches.open(CACHE);
@@ -86,7 +126,4 @@ self.addEventListener('fetch', (e) => {
     })());
     return;
   }
-
-  // Cross-origin: just pass through
-  // (Add CORS caching here if ever needed)
 });
